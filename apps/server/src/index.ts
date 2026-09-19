@@ -46,6 +46,7 @@ export default {
       return json({ ok: true, modes: MODE_IDS.map((m) => MODES[m]) });
     }
 
+
     // Create: the code is minted here, the Durable Object is addressed by it.
     if (p === '/api/rooms' && req.method === 'POST') {
       // Per-IP rate limit. Creation is unauthenticated and each call can
