@@ -17,9 +17,9 @@
   "ratelimits": [
     { "name": "CREATE_LIMIT", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } }
   ],
-  // Keeps a working URL that depends on no DNS at all, so the game is reachable
-  // while the apex is sorted out and if a domain change ever breaks.
-  "workers_dev": true,
+  // No workers.dev URL: the game lives at its own domain, and a *.workers.dev
+  // address is an internal-looking second door nobody should bookmark or share.
+  "workers_dev": false,
   // Custom domains, not routes: Cloudflare provisions the certificate and the
   // DNS record itself, and the zone is already on elly/rayden nameservers.
   "routes": [

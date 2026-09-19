@@ -1,9 +1,15 @@
-# T3RMO
+<p align="center">
+  <img src="docs/logo.png" alt="T3RMO" width="360" />
+</p>
 
-Termo competitivo em tempo real. Uma sala, **a mesma palavra**, o mesmo segundo,
-centenas de pessoas. Quem resolve em **menos tentativas** fica na frente.
+<p align="center">
+  Termo competitivo em tempo real. Uma sala, <b>a mesma palavra</b>, o mesmo
+  segundo, centenas de pessoas. Quem resolve em <b>menos tentativas</b> fica na frente.
+</p>
 
-**No ar:** [t3rmo.com](https://t3rmo.com) · espelho sem DNS: `t3rmo.follow.workers.dev`
+<p align="center">
+  <a href="https://t3rmo.com"><b>jogar em t3rmo.com</b></a>
+</p>
 
 | formato | palavras | tentativas | relógio |
 |---|---|---|---|
@@ -103,6 +109,7 @@ pnpm arena --bots 1000 --mode quarteto --rounds 2
 pnpm arena:local                             # contra o dev server
 pnpm arena --no-wait                         # não espera humano entrar
 pnpm arena --start-in 30                     # segundos de folga depois que você entra
+pnpm arena --bots 10000 --start-at 9500      # só começa quando 9500 conectarem (medição de carga)
 ```
 
 Ele imprime o link e **segura a frota até você aparecer**, porque duas coisas
@@ -182,23 +189,32 @@ o apex meio-ligado respondendo 522.
   subir. Servir 10k de verdade exige **sharding** — a sala repartida entre
   vários objetos com um só dono da resposta e da tabela. Não é opcional para o
   cenário do streamer, e é a próxima frente.
-- **Um `1006` não diagnosticado.** Sob tráfego sustentado, o dev server local
-  derruba **todos** os sockets de uma vez. Reproduzido a 60, 300, 800 e 5000
-  bots; nunca em execuções curtas. Não é hibernação e não é o harness. Se
-  acontecer em produção, é a sala inteira caindo junta.
+- **Reconexão preserva o jogo por 120 s.** Um celular que bloqueia, troca de
+  rede ou vai para segundo plano cai e volta — o estado é guardado por
+  `clientId` (em memória e em storage, sobrevive à hibernação) e recuperado no
+  reconnect. Passado esse tempo, o assento é liberado.
 
-## Não use isto num stream grande ainda
+## Endurecimento contra abuso
 
-O cenário "streamer põe o código no ar para 10 mil espectadores" **não está
-coberto**. O que falta não é capacidade, é defesa:
+O cenário "streamer põe o código no ar para milhares de espectadores" trouxe uma
+auditoria adversarial. O que já está no ar:
 
-- **`POST /api/rooms` é aberto, sem auth e sem rate limit.** Cada chamada pode
-  materializar um Durable Object. Um script cria milhões, e a conta é sua.
-- **Nada limita jogadores por sala nem sockets por pessoa.** O cooldown de 200 ms
-  é **por socket** — não limita quem abre vários.
-- **A trapaça mais óbvia é gratuita.** Nada amarra um jogador a um socket: abra
-  uma conexão descartável, queime as tentativas dela para descobrir a palavra, e
-  jogue perfeito na principal.
-- **Nome é quase livre** — 16 caracteres sem normalização, sem filtro de
-  homoglifo, e nada impede alguém de usar o nome do streamer.
+- **Roubo de sala fechado.** O id do host não é mais transmitido inteiro (só um
+  prefixo de 8 chars), e um `join` com o id do host vivo é recusado — antes, um
+  espectador lia o id no fio e derrubava o streamer com uma mensagem.
+- **Criação com limite.** `POST /api/rooms` tem rate limit por IP, e a própria
+  borda da Cloudflare corta rajadas do mesmo endereço.
+- **Teto de sala** (`ROOM_MAX`), contado por socket antes do accept, recusa com
+  503 quando cheia em vez de degradar em silêncio.
+- **`page` defangido**, autostart desligado em sala grande, `broadcastState`
+  serializado uma vez, sockets sem `join` varridos, e os handlers de runtime
+  em `try/catch` para um erro não derrubar a sala inteira.
+
+**Ainda aberto** (rastreado, não feito): sharding para 10k jogando de verdade;
+normalização de nome contra quem se passa pelo streamer; moderação (kick/ban);
+e um `1006` que o dev server local reproduz sob tráfego longo, não diagnosticado.
+
+## Licença
+
+MIT — veja [LICENSE](LICENSE).
 - **Não existe moderação.** Sem kick, sem ban, sem report, ao vivo.
