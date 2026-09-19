@@ -145,14 +145,12 @@ input { font: inherit; color: inherit; }
    of them, so the board paints over the keyboard and the rails pile up. The
    height terms below retire the rails when there is no vertical room, whatever
    the width says. */
-@media (max-width: 1280px), (max-height: 620px) {
-  .stage { grid-template-columns: minmax(0, 1fr) var(--rail-w); }
-  .rail-l { display: none; }
-}
-@media (max-width: 900px), (max-height: 520px) {
-  .stage { grid-template-columns: minmax(0, 1fr); }
-  .rail-r { display: none; }
-}
+/* The responsive display rules live at the END of this file, not here.
+   They used to sit at this point and never took effect once: `.rail { display:
+   flex }` is declared further down with the same specificity, and the later
+   rule wins, so every `display: none` written here was silently discarded. The
+   rails were visible at every width — which is exactly what a phone showed,
+   two full-width bands squeezing the board into nothing. */
 
 /* ------------------------------------------------------------------ header */
 
@@ -1021,4 +1019,100 @@ html:not([data-marks='on']) .ex-t[data-state]::after { display: none; }
   .key { height: 30px; font-size: 11px; }
   .hd { --header: 44px; }
   .shell { grid-template-rows: 44px 1fr; }
+}
+
+
+/* ==========================================================================
+   NARROW SCREENS — the board owns the surface
+   ==========================================================================
+
+   The rails are the whole competitive layer on a desktop and they cannot
+   survive a 390px screen: two of them plus a board plus a keyboard is four
+   things fighting for one column. But deleting them leaves plain
+   single-player Termo, which is the opposite of the product.
+
+   So the competition splits in two. The irreducible part — how many are here,
+   how many closed, where you stand — becomes one always-visible row under the
+   header. The rest becomes a sheet you pull up over the game, one rail at a
+   time, and it closes itself whenever the round changes so it can never hide
+   the reveal.
+
+   These rules are LAST in the file on purpose. Specificity ties are broken by
+   order, and the earlier attempt at this lost every one of them.
+   ========================================================================== */
+
+.vitals { display: none; }
+
+@media (min-width: 1281px) and (min-height: 621px) {
+  .stage { grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--rail-w); }
+}
+@media (max-width: 1280px), (max-height: 620px) {
+  .stage { grid-template-columns: minmax(0, 1fr) var(--rail-w); }
+  .rail.rail-l { display: none; }
+}
+@media (max-width: 900px), (max-height: 520px) {
+  .stage { grid-template-columns: minmax(0, 1fr); }
+  .rail.rail-l, .rail.rail-r { display: none; }
+
+  /* Three numbers, one row, no interaction required — and each one opens the
+     sheet on the rail it came from. */
+  .vitals {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    border-bottom: 1px solid var(--edge-dark);
+    background: var(--rail);
+    flex-shrink: 0;
+  }
+  .vital {
+    display: flex; flex-direction: column; align-items: center; gap: 1px;
+    padding: 7px 4px 8px; min-height: 0;
+    border-right: 1px solid var(--edge-dark);
+  }
+  .vital:last-child { border-right: none; }
+  .vital b { font-family: var(--f-game); font-weight: 600; font-size: 17px; line-height: 1; }
+  .vital b[data-tone='right'] { color: var(--right-txt); }
+  .vital b[data-tone='you'] { color: var(--you); }
+  .vital i {
+    font-style: normal; font-size: 8.5px; font-weight: 700;
+    letter-spacing: .1em; color: var(--mute); text-transform: uppercase;
+  }
+  .shell { grid-template-rows: var(--header) auto 1fr; }
+
+  /* The sheet. Whichever rail is asked for is promoted over the game; the
+     other stays hidden, so there is only ever one thing to read. */
+  .stage[data-sheet] .rail.rail-l,
+  .stage[data-sheet] .rail.rail-r {
+    display: none;
+    position: fixed;
+    inset: auto 0 calc(46px + env(safe-area-inset-bottom)) 0;
+    height: min(64vh, 480px);
+    z-index: 42;
+    border: none;
+    border-top: 1px solid var(--edge);
+    box-shadow: 0 -18px 40px rgba(25, 21, 22, .45);
+    animation: sheet-up .26s var(--ease);
+  }
+  .stage[data-sheet='rank'] .rail.rail-r { display: flex; }
+  .stage[data-sheet='pulse'] .rail.rail-l { display: flex; }
+  @keyframes sheet-up { from { transform: translateY(100%); } }
+
+  .sheet-bar {
+    position: fixed; left: 0; right: 0; z-index: 43;
+    bottom: 0; height: calc(46px + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+    display: grid; grid-template-columns: 1fr 1fr auto;
+    background: var(--ink); border-top: 1px solid var(--edge);
+  }
+  .sheet-tab {
+    font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--mute); border-bottom: 2px solid transparent;
+  }
+  .sheet-tab[data-on='true'] { color: var(--chalk); border-bottom-color: var(--right-txt); }
+  .sheet-x {
+    padding: 0 16px; font-size: 10px; font-weight: 700; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--right-txt);
+  }
+
+  /* The old floating button sat on top of the backspace key. The vitals row
+     replaced it entirely. */
+  .tab-r { display: none !important; }
 }

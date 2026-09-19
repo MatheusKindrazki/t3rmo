@@ -6,6 +6,7 @@ import {
 import { RoomSocket, loadClientId, loadName, saveName, type ConnStatus } from './lib/net.ts';
 import { keyStates, tilePx, rankFromCuts } from './lib/game.ts';
 import { Landing } from './components/Landing.tsx';
+import { Vitals } from './components/Vitals.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { Pulse } from './components/Pulse.tsx';
 import { Leaderboard } from './components/Leaderboard.tsx';
@@ -265,7 +266,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conn, setConn] = useState<ConnStatus>('idle');
-  const [drawer, setDrawer] = useState(false);
+  /** Which rail the phone sheet is showing, if any. */
+  const [sheet2, setSheet2] = useState<null | 'rank' | 'pulse'>(null);
   const [sheet, setSheet] = useState<null | 'rules' | 'progress'>(null);
   const [leaving, setLeaving] = useState(false);
   const recorded = useRef({ round: -1, match: -1 });
@@ -437,7 +439,7 @@ export default function App() {
   // the match end entirely — and the intermission is exactly when a player
   // opens the ranking.
   useEffect(() => {
-    if (st.room && st.room.phase !== 'playing') setDrawer(false);
+    if (st.room && st.room.phase !== 'playing') setSheet2(null);
   }, [st.room?.phase]);
 
   useEffect(() => {
@@ -508,7 +510,12 @@ export default function App() {
         onLeave={() => setLeaving(true)}
       />
 
-      <div className="stage" data-drawer={drawer}>
+      <Vitals
+        online={st.online} solved={st.solvedCount} rank={myRank} approx={approx}
+        onOpen={(w) => setSheet2((cur) => (cur === w ? null : w))}
+      />
+
+      <div className="stage" data-sheet={sheet2 ?? undefined}>
         <Pulse
           online={st.online}
           solved={st.solvedCount}
@@ -593,9 +600,13 @@ export default function App() {
           {conn === 'connecting' ? 'CONECTANDO…' : 'SEM CONEXÃO'}
         </div>
       )}
-      <button className="tab-r" onClick={() => setDrawer((d) => !d)}>
-        {drawer ? 'VOLTAR AO JOGO' : 'RANKING'}
-      </button>
+      {sheet2 && (
+        <div className="sheet-bar">
+          <button className="sheet-tab" data-on={sheet2 === 'rank'} onClick={() => setSheet2('rank')}>ranking</button>
+          <button className="sheet-tab" data-on={sheet2 === 'pulse'} onClick={() => setSheet2('pulse')}>pulso</button>
+          <button className="sheet-x" onClick={() => setSheet2(null)} aria-label="voltar ao jogo">voltar ao jogo</button>
+        </div>
+      )}
     </div>
   );
 }

@@ -345,7 +345,17 @@ function verdict({ a, lat, rtt, hand, gap, roundMs }) {
   const why = [];
   let who = 'NENHUM DOS DOIS saturou';
 
-  if (dropRate >= 0.5) {
+  const failRate = a.failed / Math.max(1, a.failed + a.connected);
+
+  if (failRate >= 0.05 && clientLag < 150) {
+    // A refused upgrade is the server saying no out loud. It outranks every
+    // latency number below, because the latencies that survived were measured
+    // on the connections it agreed to accept — a fleet half this size.
+    who = 'SERVIDOR';
+    why.push(`recusou ${a.failed} de ${a.failed + a.connected} handshakes (${(failRate * 100).toFixed(0)}%) com o cliente ocioso (lag p99 ${clientLag.toFixed(0)} ms)`);
+    why.push(`teto observado nesta execução: ${a.peakSockets} sockets simultâneos`);
+    why.push('a latência acima vale só para quem CONSEGUIU entrar — não é o perfil de uma sala com --n inteiro');
+  } else if (dropRate >= 0.5) {
     who = 'SERVIDOR';
     why.push(`derrubou ${dropped} de ${a.peakSockets} sockets (${(dropRate * 100).toFixed(0)}%) — códigos ${JSON.stringify(a.closeCodes)}`);
   } else if (clientLag >= 150 && clientLag >= latP95 * 0.5) {
