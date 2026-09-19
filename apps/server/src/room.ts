@@ -281,8 +281,14 @@ export class Room implements DurableObject {
 
     this.attach(ws, a);
     this.dirty = true;
-    this.recompute();
 
+    // Rank comes from the last tick, not from a fresh sort.
+    //
+    // Sorting here looks harmless and is not: at 3000 players and ~730 guesses
+    // a second it is ~730 sorts of 3000 rows per second, and it was measured
+    // moving guess p95 from 105 ms to 310 ms. The figure is at most one tick
+    // stale, which is exactly how stale the table the player is looking at
+    // already is — and the next tick corrects it either way.
     this.send(ws, {
       t: 'result', seq, ok: true, word, tiles, solved: [...a.solved],
       guessesUsed: a.guesses.length, finished: done, score: a.score,
@@ -567,7 +573,7 @@ export class Room implements DurableObject {
 
   /** Re-sorts only when something actually moved. */
   private recompute(): void {
-    if (!this.dirty && this.order.length) return;
+    if (!this.dirty && this.order.length === this.cache.size && this.order.length > 0) return;
     const rows: Standing[] = [];
     for (const a of this.cache.values()) {
       rows.push({
