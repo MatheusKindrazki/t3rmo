@@ -4,7 +4,7 @@ import {
   scoreRound, compareStandings, assertAttemptsDominate, type Standing,
   TICK_MS, tickMsFor, EXACT_RANK_LIMIT, CUT_RANKS, SPY_N,
   HEARTBEAT_MS, GUESS_COOLDOWN_MS, TOP_N, PAGE_MAX, PROTOCOL_VERSION,
-  ROOM_MAX, JOIN_GRACE_MS, PAGE_COOLDOWN_MS, AUTOSTART_MAX_PLAYERS,
+  ROOM_MAX, JOIN_GRACE_MS, PAGE_COOLDOWN_MS, AUTOSTART_MAX_PLAYERS, LIMBO_MS, LIMBO_MAX,
   encodeTickShared, spliceMe,
   type ClientMessage, type ServerMessage, type Phase, type RoomSnapshot,
   type RowWire, type FeedWire,
@@ -93,6 +93,11 @@ export class Room implements DurableObject {
 
   /** Rebuilt from socket attachments; never the source of truth across hibernation. */
   private cache = new Map<WebSocket, Attached>();
+  /**
+   * Players whose socket dropped, held by clientId so a reconnect keeps their
+   * progress. Backed by storage (key `l:<id>`) so it survives hibernation.
+   */
+  private limbo = new Map<string, { a: Attached; at: number }>();
   private dirty = true;
   private lastEmit = 0;
   private feed: FeedWire[] = [];
@@ -233,6 +238,21 @@ export class Room implements DurableObject {
     this.cache.delete(ws);
     this.dirty = true;
 
+    if (gone && !this.hasPlayer(gone.id)) {
+      // The socket dropped and this player has no other live socket, so hold
+      // their progress by clientId for a grace period — a phone that locked or
+      // changed network will reconnect and must not lose the guesses it already
+      // spent. Skipped when they are already back on another socket (the
+      // reconnect adopted the state and this close is the stale old one).
+      this.limbo.set(gone.id, { a: gone, at: Date.now() });
+      void this.state.storage.put(`l:${gone.id}`, gone);
+      if (this.limbo.size > LIMBO_MAX) {
+        // Evict the oldest so a connect/drop flood cannot grow this unbounded.
+        const oldest = [...this.limbo.entries()].sort((x, y) => x[1].at - y[1].at)[0];
+        if (oldest) { this.limbo.delete(oldest[0]); void this.state.storage.delete(`l:${oldest[0]}`); }
+      }
+    }
+
     if (gone) {
       this.pushFeed(['out', gone.name, this.cache.size]);
       // Host was only ever reassigned on the next join, which a two-person
@@ -305,7 +325,16 @@ export class Room implements DurableObject {
       }
     }
 
-    const prior = this.evictById(id, ws);
+    let prior = this.evictById(id, ws);
+    if (!prior) {
+      // No live socket for this id — but they may have dropped moments ago and
+      // still be in limbo. Memory first, then storage (which survives a
+      // hibernation between the drop and the reconnect).
+      const held = this.limbo.get(id);
+      if (held && Date.now() - held.at <= LIMBO_MS) prior = held.a;
+      else prior = (await this.state.storage.get<Attached>(`l:${id}`)) ?? undefined;
+    }
+    if (prior) { this.limbo.delete(id); void this.state.storage.delete(`l:${id}`); }
 
     const cfg = this.roundCfg();
     const a: Attached = prior ?? {
@@ -625,6 +654,7 @@ export class Room implements DurableObject {
           return void (await this.beginMatch());
         }
         this.sweepUnjoined();
+        this.sweepLimbo();
         return void (await this.maybeScheduleAlarm());
       default:
         return;
@@ -920,6 +950,17 @@ export class Room implements DurableObject {
    * after the grace window is either a flooder or a dead tab, and either way
    * it should not hold a seat. Called from the lobby alarm and after joins.
    */
+  /** Drop limbo entries past the grace window, in memory and in storage. */
+  private sweepLimbo(): void {
+    const now = Date.now();
+    for (const [id, held] of this.limbo) {
+      if (now - held.at > LIMBO_MS) {
+        this.limbo.delete(id);
+        void this.state.storage.delete(`l:${id}`);
+      }
+    }
+  }
+
   private sweepUnjoined(): void {
     const now = Date.now();
     for (const ws of this.state.getWebSockets()) {

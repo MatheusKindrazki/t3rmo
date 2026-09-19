@@ -71,6 +71,21 @@ export const ROOM_MAX = 1500;
 /** A socket that never sends `join` within this window is dropped. */
 export const JOIN_GRACE_MS = 10_000;
 
+/**
+ * How long a dropped player's progress is held so a reconnect keeps it.
+ *
+ * A phone that locks, backgrounds, or switches wifi↔4G closes the socket, and
+ * the server processes that close and removes the player. Without a grace hold,
+ * the reconnect a few seconds later finds nothing to adopt and starts over —
+ * which on a competitive board means the guesses you already spent this round
+ * vanish. Two minutes covers a lock screen and a tunnel without holding a seat
+ * forever; the state is kept in storage so it survives even a hibernation.
+ */
+export const LIMBO_MS = 120_000;
+
+/** Cap on held-over players, so a connect/drop flood cannot grow it without bound. */
+export const LIMBO_MAX = 500;
+
 /** Minimum spacing between two `page` requests from one socket. */
 export const PAGE_COOLDOWN_MS = 1_000;
 
