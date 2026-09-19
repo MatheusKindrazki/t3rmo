@@ -1,0 +1,17 @@
+{
+  "name": "termo-arena",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.11.0",
+  "scripts": {
+    "words": "node scripts/build-words.mjs",
+    "typecheck": "pnpm -r --parallel typecheck",
+    "build": "pnpm --filter @arena/web build && pnpm --filter @arena/server build",
+    "dev": "pnpm --filter @arena/web dev",
+    "dev:server": "pnpm --filter @arena/server dev",
+    "loadtest": "node tools/loadtest.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
