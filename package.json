@@ -9,7 +9,9 @@
     "build": "pnpm --filter @arena/web build && pnpm --filter @arena/server build",
     "dev": "pnpm --filter @arena/web dev",
     "dev:server": "pnpm --filter @arena/server dev",
-    "loadtest": "node tools/loadtest.mjs"
+    "loadtest": "node tools/loadtest.mjs",
+    "arena": "node tools/arena.mjs",
+    "arena:local": "node tools/arena.mjs --host 127.0.0.1:8791"
   },
   "devDependencies": {
     "typescript": "^5.6.3"
