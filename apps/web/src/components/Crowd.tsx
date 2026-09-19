@@ -27,21 +27,34 @@ export function Crowd({ seed = 20260918 }: { seed?: number }) {
     // every node is pure cost.
     const w = typeof window === 'undefined' ? 1440 : window.innerWidth;
     const h = typeof window === 'undefined' ? 900 : window.innerHeight;
-    // Pitch measured against the CSS, not guessed: a board is ~70px tall
-    // (5 square cells wide capped at 58px, six rows) plus the grid gap.
-    const cols = Math.ceil((w * (w > 880 ? 0.72 : 1)) / 96) + 1;
-    const rows = Math.ceil(h / 98) + 1;
-    const boards = Math.min(w > 880 ? 170 : 48, cols * rows);
+    // OVERSHOOT on purpose, and never cap into the visible area.
+    //
+    // The column count here is an estimate; the real one is decided by the CSS
+    // (`auto-fill` over `minmax(68px, 1fr)` plus a clamped gap), so the two do
+    // not agree. Capping the total at a round number therefore ended the field
+    // on a half-empty row INSIDE the viewport — a stub of one or two boards
+    // with blank ground beside it, which reads as the layout giving up. The fix
+    // is to render more rows than can possibly fit and let the mask crop them,
+    // so whatever row ends up partial is already off-screen.
+    const cols = Math.ceil((w * (w > 880 ? 0.72 : 1)) / 84) + 2;
+    const rows = Math.ceil(h / 84) + 2;
+    const boards = Math.min(w > 880 ? 340 : 90, cols * rows);
+    // ~15 of a board's 30 cells are filled on average.
+    const liveFraction = Math.min(0.42, 1000 / Math.max(1, boards * 15));
     const rand = mulberry32(seed);
     return Array.from({ length: boards }, () => {
       // Most players are mid-round; a few have just started, a few are done.
       const filled = 1 + Math.floor(rand() * (ROWS - 1));
       const pace = 0.7 + rand() * 2.4;
       const offset = rand() * 9;
-      // Fewer than half the boards animate. Density is what reads as a crowd;
-      // motion everywhere is just cost, and a room where every single player
-      // moves on the same beat is not what a room looks like anyway.
-      const live = rand() < 0.42;
+      // Density fills the surface; motion is what costs. So the animated
+      // FRACTION shrinks as the field grows, holding the number of animating
+      // cells roughly constant (~1000) no matter the screen. Measured: the
+      // field went from 51 fps to 81 fps when the animation moved from
+      // background-color to composited opacity, and this keeps that headroom
+      // on a big display. A room where every player moves on the same beat is
+      // not what a room looks like anyway.
+      const live = rand() < liveFraction;
       const cells = Array.from({ length: ROWS * COLS }, (_, i) => {
         const row = Math.floor(i / COLS);
         if (row >= filled) return -1;
