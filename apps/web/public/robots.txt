@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+
+# Room URLs are ephemeral — a code lives for one match and then means nothing.
+# Indexing them would fill the results with dead lobbies.
+Disallow: /?sala=
+Disallow: /api/
+
+Sitemap: https://t3rmo.com/sitemap.xml

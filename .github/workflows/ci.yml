@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Types first: it is the cheapest gate and it catches the whole class of
+      # break where core changes and the client does not follow.
+      - name: typecheck
+        run: pnpm -r typecheck
+
+      - name: testes do núcleo
+        run: node --test packages/core/test/core.test.ts
+
+      # The dictionary is generated from two committed inputs. If someone edits
+      # answers.ts and forgets to regenerate, the answer they added is not a
+      # legal guess — the worst possible bug in a live round. Regenerate and
+      # fail if the result differs from what is committed.
+      - name: dicionário está regenerado
+        run: |
+          node scripts/build-words.mjs
+          git diff --exit-code -- packages/core/src/words.generated.ts \
+            || { echo "::error::words.generated.ts está desatualizado — rode 'pnpm words' e commite"; exit 1; }
+
+      - name: build
+        run: pnpm --filter @arena/web build
+
+      - name: worker compila
+        run: pnpm --filter @arena/server build

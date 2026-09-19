@@ -1,0 +1,65 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time, and never cancel one midway: wrangler uploads assets and
+# then flips triggers, and killing it between those two leaves the worker
+# serving an old bundle against new triggers.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://t3rmo.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Deploy gates on the same checks CI runs. A red build that still ships is
+      # a pipeline that exists to make you feel safe rather than be safe.
+      - run: pnpm -r typecheck
+      - run: node --test packages/core/test/core.test.ts
+
+      - name: build do cliente
+        run: pnpm --filter @arena/web build
+
+      - name: publicar no cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/server
+          command: deploy
+
+      # Prove the thing that actually matters after a deploy: that the origin
+      # answers and that a room can still be created. A green wrangler step only
+      # says the upload succeeded.
+      - name: fumaça em produção
+        run: |
+          set -e
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://t3rmo.com/api/health || true)
+            [ "$code" = "200" ] && break
+            echo "tentativa $i: HTTP $code — aguardando propagação"
+            sleep 10
+          done
+          [ "$code" = "200" ] || { echo "::error::/api/health respondeu $code"; exit 1; }
+          sala=$(curl -s --max-time 15 -X POST https://t3rmo.com/api/rooms | tr -d '\n')
+          echo "$sala" | grep -q '"code"' || { echo "::error::criação de sala falhou: $sala"; exit 1; }
+          echo "produção ok · $sala"
