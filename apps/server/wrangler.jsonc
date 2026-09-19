@@ -10,10 +10,12 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
   "observability": { "enabled": true },
+  // Keeps a working URL that depends on no DNS at all, so the game is reachable
+  // while the apex is sorted out and if a domain change ever breaks.
+  "workers_dev": true,
   // Custom domains, not routes: Cloudflare provisions the certificate and the
   // DNS record itself, and the zone is already on elly/rayden nameservers.
   "routes": [
-    { "pattern": "t3rmo.com", "custom_domain": true },
-    { "pattern": "www.t3rmo.com", "custom_domain": true }
+    { "pattern": "t3rmo.com", "custom_domain": true }
   ]
 }
