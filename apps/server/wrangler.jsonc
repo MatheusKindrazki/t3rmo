@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "termo-arena",
+  "name": "t3rmo",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -9,5 +9,11 @@
     "bindings": [{ "name": "ROOM", "class_name": "Room" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  // Custom domains, not routes: Cloudflare provisions the certificate and the
+  // DNS record itself, and the zone is already on elly/rayden nameservers.
+  "routes": [
+    { "pattern": "t3rmo.com", "custom_domain": true },
+    { "pattern": "www.t3rmo.com", "custom_domain": true }
+  ]
 }
