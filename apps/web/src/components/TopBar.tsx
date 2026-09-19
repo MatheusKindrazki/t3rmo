@@ -29,17 +29,20 @@ function Clock({ deadline, serverNow }: { deadline: number; serverNow: () => num
 }
 
 export function TopBar({
-  room, online, myRank, approx, serverNow, onRules, onProgress,
+  room, online, myRank, prevRank, approx, serverNow, onRules, onProgress,
 }: {
   room: RoomSnapshot;
   online: number;
   myRank: number;
+  /** Where you were before the last change, so the header can show movement. */
+  prevRank: number;
   approx: boolean;
   serverNow: () => number;
   onRules: () => void;
   onProgress: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const moved = prevRank > 0 && myRank > 0 ? prevRank - myRank : 0;
   const showClock = room.deadline > 0 && room.phase !== 'finished' && room.phase !== 'lobby';
 
   const invite = () => {
@@ -66,7 +69,16 @@ export function TopBar({
           <i>jogando</i>
         </div>
         <div className="stat" data-tone="you">
-          <b>{myRank > 0 ? `${approx ? '~' : ''}${fmtInt(myRank)}` : '—'}</b>
+          <b>
+            {myRank > 0 ? `${approx ? '~' : ''}${fmtInt(myRank)}` : '—'}
+            {/* A table that only says where you ARE hides the thing actually
+                happening to you. Lower rank number means you climbed. */}
+            {moved !== 0 && (
+              <span className="delta" data-dir={moved > 0 ? 'up' : 'down'}>
+                {moved > 0 ? '▲' : '▼'}{Math.abs(moved)}
+              </span>
+            )}
+          </b>
           <i>sua posição</i>
         </div>
         {/* Two buttons that each do one nameable thing, instead of one that

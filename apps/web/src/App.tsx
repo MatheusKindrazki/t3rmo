@@ -11,7 +11,7 @@ import { Pulse } from './components/Pulse.tsx';
 import { Leaderboard } from './components/Leaderboard.tsx';
 import { Boards } from './components/Boards.tsx';
 import { Keyboard } from './components/Keyboard.tsx';
-import { CountdownVeil, RoundEndVeil, MatchEndVeil, LobbyVeil } from './components/Overlays.tsx';
+import { CountdownVeil, RoundEndVeil, MatchEndVeil, LobbyVeil, DeadRoomVeil, WaitVeil } from './components/Overlays.tsx';
 import { Rules } from './components/Rules.tsx';
 import { Progress } from './components/Progress.tsx';
 import { recordRound, recordMatch } from './lib/stats.ts';
@@ -31,8 +31,20 @@ interface State {
   tiles: Tile[][][];
   solved: boolean[];
   finished: boolean;
-  draft: string;
+  /**
+   * Five slots, not a string.
+   *
+   * A string forces letters to arrive left to right, which is not how people
+   * solve: you often know the word ends in -ÃO, or that the third letter is an
+   * R, long before you know the first. Slots let the cursor be placed anywhere
+   * — by arrow key or by tapping the square — and let a letter be dropped into
+   * the middle of an otherwise empty row.
+   */
+  draft: string[];
+  cursor: number;
   shakeKey: number;
+  /** Row index the shake belongs to, so it fires once and not on every later row. */
+  shakeAt: number;
   top: RowWire[];
   hist: number[];
   online: number;
@@ -42,23 +54,41 @@ interface State {
   spy: [string, string][];
   /** Percentile ladder sent instead of a personal rank in large rooms. */
   cuts: number[];
+  /** True while `me` came from a `result`, i.e. the server addressed us by name. */
+  exactRank: boolean;
+  /** Rank before the last change, for the movement arrow. */
+  prevRank: number;
   roundEnd: RoundEnd | null;
-  matchEnd: { standings: RowWire[]; you: { rank: number; score: number } | null } | null;
+  matchEnd: { standings: RowWire[]; you: { rank: number; score: number } | null; answers: string[] } | null;
   toast: { msg: string; id: number } | null;
 }
 
 const EMPTY: State = {
   you: null, room: null, guesses: [], tiles: [], solved: [], finished: false,
-  draft: '', shakeKey: 0, top: [], hist: [], online: 0, solvedCount: 0, feed: [],
-  me: null, spy: [], cuts: [], roundEnd: null, matchEnd: null, toast: null,
+  draft: ['', '', '', '', ''], cursor: 0, shakeKey: 0, shakeAt: -1,
+  top: [], hist: [], online: 0, solvedCount: 0, feed: [],
+  me: null, spy: [], cuts: [], exactRank: false, prevRank: 0, roundEnd: null, matchEnd: null, toast: null,
 };
 
 type Action =
   | { k: 'msg'; m: ServerMessage }
   | { k: 'type'; ch: string }
   | { k: 'back' }
+  | { k: 'move'; to: number | 'left' | 'right' | 'home' | 'end' }
   | { k: 'toast'; msg: string }
   | { k: 'clearToast' };
+
+const EMPTY_DRAFT = ['', '', '', '', ''];
+const WL = WORD_LENGTH;
+
+/** Next empty slot at or after `from`, wrapping once; -1 when the row is full. */
+function nextGap(draft: string[], from: number): number {
+  for (let i = 0; i < WL; i++) {
+    const j = (from + i) % WL;
+    if (!draft[j]) return j;
+  }
+  return -1;
+}
 
 const REJECTION: Record<string, string> = {
   'unknown-word': 'palavra não encontrada',
@@ -71,11 +101,38 @@ function reduce(s: State, a: Action): State {
   switch (a.k) {
     case 'type': {
       if (s.finished || s.room?.phase !== 'playing') return s;
-      if (s.draft.length >= WORD_LENGTH) return s;
-      return { ...s, draft: s.draft + a.ch };
+      const at = s.cursor;
+      const draft = [...s.draft];
+      draft[at] = a.ch;
+      // Advance to the next EMPTY slot rather than to at+1, so filling a gap in
+      // the middle of a half-typed row lands you on the next gap instead of
+      // overwriting the letter you already placed.
+      const gap = nextGap(draft, at + 1);
+      return { ...s, draft, cursor: gap === -1 ? Math.min(WL - 1, at + 1) : gap };
     }
-    case 'back':
-      return s.draft ? { ...s, draft: s.draft.slice(0, -1) } : s;
+    case 'back': {
+      if (s.finished) return s;
+      const draft = [...s.draft];
+      // Clear under the cursor if there is something there; otherwise step back
+      // and clear that. This is what every text field does and what the hand
+      // expects, and it is the only way to delete the last letter of a full row
+      // without the cursor having nowhere further to go.
+      if (draft[s.cursor]) { draft[s.cursor] = ''; return { ...s, draft }; }
+      const prev = Math.max(0, s.cursor - 1);
+      draft[prev] = '';
+      return { ...s, draft, cursor: prev };
+    }
+    case 'move': {
+      if (s.finished || s.room?.phase !== 'playing') return s;
+      const to = a.to;
+      const at =
+        to === 'left' ? Math.max(0, s.cursor - 1)
+        : to === 'right' ? Math.min(WL - 1, s.cursor + 1)
+        : to === 'home' ? 0
+        : to === 'end' ? WL - 1
+        : Math.max(0, Math.min(WL - 1, to));
+      return { ...s, cursor: at };
+    }
     case 'toast':
       return { ...s, toast: { msg: a.msg, id: Date.now() } };
     case 'clearToast':
@@ -98,7 +155,7 @@ function reduce(s: State, a: Action): State {
             tiles: b?.tiles ?? Array.from({ length: boards }, () => []),
             solved: b?.solved ?? new Array(boards).fill(false),
             finished: b?.finished ?? false,
-            draft: '',
+            draft: [...EMPTY_DRAFT], cursor: 0,
           };
         }
 
@@ -110,7 +167,7 @@ function reduce(s: State, a: Action): State {
             tiles: Array.from({ length: m.boards }, () => []),
             solved: new Array(m.boards).fill(false),
             finished: false,
-            draft: '',
+            draft: [...EMPTY_DRAFT], cursor: 0, shakeAt: -1,
             hist: new Array(m.maxGuesses).fill(0),
             solvedCount: 0,
             feed: [],
@@ -121,9 +178,14 @@ function reduce(s: State, a: Action): State {
 
         case 'result': {
           if (!m.ok) {
+            // shakeAt pins the shake to the row it belongs to. Gating on
+            // `shakeKey > 0` meant that after a single rejection every later
+            // row shook too — the player was told they had erred on every
+            // correct guess for the rest of the round.
             return {
               ...s,
               shakeKey: s.shakeKey + 1,
+              shakeAt: s.guesses.length,
               toast: { msg: REJECTION[m.reason] ?? m.reason, id: Date.now() },
             };
           }
@@ -135,8 +197,12 @@ function reduce(s: State, a: Action): State {
             tiles,
             solved: m.solved,
             finished: m.finished,
-            draft: '',
+            draft: [...EMPTY_DRAFT],
+            cursor: 0,
+            shakeAt: -1,
             me: [m.rank, m.score, m.guessesUsed],
+            exactRank: m.rank > 0,
+            prevRank: s.me?.[0] ?? 0,
           };
         }
 
@@ -150,6 +216,8 @@ function reduce(s: State, a: Action): State {
             feed: m.feed.length ? [...s.feed, ...m.feed].slice(-30) : s.feed,
             spy: m.spy ?? s.spy,
             cuts: m.cuts ?? [],
+            // A tick with no personal slice means the exact figure has aged out.
+            exactRank: m.me ? true : s.cuts.length > 0 ? false : s.exactRank,
             // In a large room the frame carries no personal slice; the exact
             // figure still arrives with every `result`, and between guesses the
             // ladder places the player.
@@ -165,7 +233,18 @@ function reduce(s: State, a: Action): State {
           };
 
         case 'matchEnd':
-          return { ...s, room: m.room, matchEnd: { standings: m.standings, you: m.you }, roundEnd: null };
+          return {
+            ...s,
+            room: m.room,
+            // `answers` is being added to this frame server-side; read it
+            // defensively so the client works against either version.
+            matchEnd: {
+              standings: m.standings,
+              you: m.you,
+              answers: (m as { answers?: string[] }).answers ?? s.roundEnd?.answers ?? [],
+            },
+            roundEnd: null,
+          };
 
         case 'page':
           return s;
@@ -238,6 +317,17 @@ export default function App() {
     if (code && !sock.current) enter(code.toUpperCase(), loadName() || 'anon');
   }, [enter]);
 
+  /** The app had no exit at all: `st.room` was never set back to null, so a
+   *  dead room could only be escaped by editing the URL. */
+  const leave = useCallback(() => {
+    sock.current?.close();
+    sock.current = null;
+    const url = new URL(location.href);
+    url.searchParams.delete('sala');
+    history.replaceState(null, '', url);
+    location.reload();
+  }, []);
+
   useEffect(() => () => sock.current?.close(), []);
   useEffect(() => {
     const onResize = () => { setVh(window.innerHeight); setVw(window.innerWidth); };
@@ -248,11 +338,12 @@ export default function App() {
   /* ------------------------------------------------------------ input */
 
   const submit = useCallback(() => {
-    if (st.draft.length !== WORD_LENGTH) {
+    const word = st.draft.join('');
+    if (word.length !== WORD_LENGTH) {
       dispatch({ k: 'toast', msg: 'faltam letras' });
       return;
     }
-    sock.current?.guess(st.draft);
+    sock.current?.guess(word);
   }, [st.draft]);
 
   const onKey = useCallback((k: string) => {
@@ -264,10 +355,19 @@ export default function App() {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      // Bail on anything interactive, not just fields. Checking only
+      // INPUT/TEXTAREA meant a keydown on a <button> still bubbled to window
+      // and got preventDefault()ed, so Enter activated NO button anywhere in
+      // the app — "abrir sala" included, and on the landing the resulting
+      // toast was not even rendered, so the key was completely silent.
+      if ((e.target as HTMLElement | null)?.closest?.('input, textarea, select, button, [href], [contenteditable]')) return;
       if (e.key === 'Enter') { e.preventDefault(); return submit(); }
       if (e.key === 'Backspace') { e.preventDefault(); return dispatch({ k: 'back' }); }
+      if (e.key === 'Delete') { e.preventDefault(); return dispatch({ k: 'back' }); }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); return dispatch({ k: 'move', to: 'left' }); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); return dispatch({ k: 'move', to: 'right' }); }
+      if (e.key === 'Home') { e.preventDefault(); return dispatch({ k: 'move', to: 'home' }); }
+      if (e.key === 'End') { e.preventDefault(); return dispatch({ k: 'move', to: 'end' }); }
       const ch = e.key.toUpperCase();
       if (/^[A-ZÇ]$/.test(ch)) { e.preventDefault(); dispatch({ k: 'type', ch }); }
     };
@@ -302,6 +402,14 @@ export default function App() {
     recordMatch(st.room.mode, me.you.rank);
   }, [st.matchEnd, st.room?.mode]);
 
+  // On a phone the drawer hides the whole play column, veils included. Leaving
+  // it open through an intermission meant missing the reveal, the countdown and
+  // the match end entirely — and the intermission is exactly when a player
+  // opens the ranking.
+  useEffect(() => {
+    if (st.room && st.room.phase !== 'playing') setDrawer(false);
+  }, [st.room?.phase]);
+
   useEffect(() => {
     if (!st.toast) return;
     const t = setTimeout(() => dispatch({ k: 'clearToast' }), 1500);
@@ -320,9 +428,13 @@ export default function App() {
     [cfg?.boards, cfg?.maxGuesses, vw, vh],
   );
 
-  // Exact when the server addressed us personally; estimated from the ladder
-  // otherwise. The UI marks the difference rather than hiding it.
-  const approx = st.cuts.length > 0;
+  // In a big room the frame carries a percentile ladder instead of a personal
+  // slice — but a `result` still carries the player's EXACT rank, and throwing
+  // that away to re-derive "~250" from a 14-step ladder broke the contract
+  // protocol.ts states and the promise the UI prints. Exact wins while it is
+  // fresh; the ladder only fills the gap between guesses.
+  const exact = st.me !== null && st.me[0] > 0 && st.exactRank;
+  const approx = st.cuts.length > 0 && !exact;
   const myRank = approx && st.me ? rankFromCuts(st.me[1], st.cuts, st.online) : (st.me?.[0] ?? 0);
 
   if (!st.room || !cfg) {
@@ -341,10 +453,15 @@ export default function App() {
   }
 
   const phase = st.room.phase;
+  // Derived every frame, not frozen at welcome. The server reassigns the host
+  // when one leaves, and RoomSnapshot.hostId already carries it — reading the
+  // welcome-time flag meant a promoted player was shown "aguardando quem criou
+  // a sala" and no button, while the server would have accepted their start.
+  const isHost = st.room.hostId !== null && st.room.hostId === st.you?.id;
   return (
     <div className="shell">
       <TopBar
-        room={st.room} online={st.online} myRank={myRank} approx={approx} serverNow={serverNow}
+        room={st.room} online={st.online} myRank={myRank} prevRank={st.prevRank} approx={approx} serverNow={serverNow}
         onRules={() => setSheet('rules')} onProgress={() => setSheet('progress')}
       />
 
@@ -367,7 +484,10 @@ export default function App() {
               tiles={st.tiles}
               solved={st.solved}
               draft={st.draft}
+              cursor={st.cursor}
+              onPick={(i) => dispatch({ k: 'move', to: i })}
               shakeKey={st.shakeKey}
+              shakeAt={st.shakeAt}
               tile={tile}
             />
           </div>
@@ -382,21 +502,24 @@ export default function App() {
           {phase === 'lobby' && (
             <LobbyVeil
               online={st.online}
-              isHost={st.you?.isHost ?? false}
+              isHost={isHost}
               code={st.room.code}
               onStart={() => sock.current?.send({ t: 'start' })}
             />
           )}
           {phase === 'countdown' && <CountdownVeil deadline={st.room.deadline} serverNow={serverNow} />}
-          {phase === 'intermission' && st.roundEnd && <RoundEndVeil {...st.roundEnd} />}
-          {phase === 'finished' && st.matchEnd && (
-            <MatchEndVeil
-              standings={st.matchEnd.standings}
-              you={st.matchEnd.you}
-              isHost={st.you?.isHost ?? false}
-              onAgain={() => sock.current?.send({ t: 'start' })}
-            />
-          )}
+          {phase === 'intermission' && (st.roundEnd
+            ? <RoundEndVeil {...st.roundEnd} />
+            : <WaitVeil deadline={st.room.deadline} serverNow={serverNow} />)}
+          {phase === 'finished' && (st.matchEnd
+            ? <MatchEndVeil
+                standings={st.matchEnd.standings}
+                you={st.matchEnd.you}
+                answers={st.matchEnd.answers}
+                isHost={isHost}
+                onAgain={() => sock.current?.send({ t: 'start' })}
+              />
+            : <DeadRoomVeil code={st.room.code} onLeave={leave} />)}
         </main>
 
         <Leaderboard
@@ -415,7 +538,11 @@ export default function App() {
       {sheet === 'progress' && <Progress mode={st.room.mode} onClose={() => setSheet(null)} />}
 
       {st.toast && <div className="toast" data-tone="bad" key={st.toast.id} role="status">{st.toast.msg}</div>}
-      {conn === 'closed' && <div className="toast" data-tone="bad" role="status">RECONECTANDO…</div>}
+      {conn !== 'open' && conn !== 'idle' && (
+        <div className="toast" data-tone="bad" role="status">
+          {conn === 'connecting' ? 'CONECTANDO…' : 'SEM CONEXÃO'}
+        </div>
+      )}
       <button className="tab-r" onClick={() => setDrawer((d) => !d)}>
         {drawer ? 'VOLTAR AO JOGO' : 'RANKING'}
       </button>

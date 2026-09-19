@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Confetti } from './Confetti.tsx';
 import type { RowWire } from '@arena/core';
 import { fmtInt } from '../lib/game.ts';
 
@@ -69,37 +70,105 @@ export function RoundEndVeil({
 }
 
 export function MatchEndVeil({
-  standings, you, onAgain, isHost,
+  standings, you, answers, onAgain, isHost,
 }: {
   standings: RowWire[];
   you: { rank: number; score: number } | null;
+  /** The final round's words — nothing else ever reveals them. */
+  answers: string[];
   onAgain: () => void;
   isHost: boolean;
 }) {
+  const podium = standings.slice(0, 3);
+  const onPodium = you !== null && you.rank > 0 && you.rank <= 3;
   return (
-    <div className="veil">
+    <div className="veil" role="status">
+      {podium.length > 0 && <Confetti />}
       <div className="veil-box">
-        <div className="kicker">partida encerrada</div>
-        <div className="vtitle" style={{ color: 'var(--right)' }}>
-          {standings[0] ? standings[0][2] : '—'}
-        </div>
-        {you && <div className="hint" style={{ marginTop: 6 }}>você terminou em #{fmtInt(you.rank)} com {fmtInt(you.score)} pontos</div>}
+        <div className="kicker">{onPodium ? 'você subiu no pódio' : 'partida encerrada'}</div>
 
-        <div className="pod" style={{ maxHeight: 300, overflowY: 'auto' }}>
-          {standings.slice(0, 12).map(([rank, id, name, score, guesses, , mine]) => (
-            <div className="pod-r" key={id} data-p={rank <= 3 ? rank : undefined}
-                 style={mine === 1 ? { background: 'rgba(79,216,255,.1)' } : undefined}>
-              <span className="lb-k">{rank}</span>
-              <span className="lb-nm">{name}</span>
-              <span className="lb-a">{guesses}t</span>
-              <span className="lb-s">{fmtInt(score)}</span>
+        {/* The last round's answer used to die unseen: endRound flips the phase
+            to 'finished' before the reveal renders, so the most satisfying beat
+            in Termo was missing from the round the match actually ends on. */}
+        {answers.length > 0 && (
+          <div className="reveal">
+            {answers.map((w, i) => (
+              <div className="rw" key={w} style={{ animationDelay: `${i * 90}ms` }}>
+                {[...w].map((ch, j) => <span className="rc" key={j}>{ch}</span>)}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="pod-top">
+          {podium.map(([rank, id, name, score, guesses, , mine]) => (
+            <div className="pod-big" key={id} data-p={rank}>
+              <span className="pod-medal">{rank === 1 ? '1º' : rank === 2 ? '2º' : '3º'}</span>
+              <span className="pod-name">{name}{mine === 1 ? ' (você)' : ''}</span>
+              <span className="pod-att">{guesses}t</span>
+              <span className="pod-score">{fmtInt(score)}</span>
             </div>
           ))}
         </div>
 
+        {you && !onPodium && (
+          <div className="hint" style={{ marginTop: 12 }}>
+            você terminou em <b style={{ color: 'var(--you)' }}>#{fmtInt(you.rank)}</b> com {fmtInt(you.score)} pontos
+          </div>
+        )}
+
+        {standings.length > 3 && (
+          <div className="pod" style={{ maxHeight: 190, overflowY: 'auto', marginTop: 12 }}>
+            {standings.slice(3, 15).map(([rank, id, name, score, guesses, , mine]) => (
+              <div className="pod-r" key={id} style={mine === 1 ? { background: 'rgba(143,211,255,.12)' } : undefined}>
+                <span className="lb-k">{rank}</span>
+                <span className="lb-nm">{name}</span>
+                <span className="lb-a">{guesses}t</span>
+                <span className="lb-s">{fmtInt(score)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {isHost
-          ? <button className="btn" style={{ marginTop: 20 }} onClick={onAgain}>JOGAR DE NOVO</button>
-          : <div className="hint" style={{ marginTop: 20 }}>aguardando quem criou a sala começar outra</div>}
+          ? <button className="btn" style={{ marginTop: 18, position: 'relative', zIndex: 2 }} onClick={onAgain}>jogar de novo</button>
+          : <div className="hint" style={{ marginTop: 18 }}>aguardando quem criou a sala começar outra</div>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Arriving in a room whose match already ended used to render nothing at all —
+ * `matchEnd` only reaches sockets that were present when it happened, so a
+ * stale invite link produced a dead grey grid with no message and no exit.
+ */
+export function DeadRoomVeil({ code, onLeave }: { code: string; onLeave: () => void }) {
+  return (
+    <div className="veil" role="status">
+      <div className="veil-box">
+        <div className="kicker">sala {code}</div>
+        <div className="vtitle">esta partida já acabou</div>
+        <div className="hint" style={{ marginTop: 10 }}>o link que você abriu é de uma partida encerrada.</div>
+        <button className="btn" style={{ marginTop: 20 }} onClick={onLeave}>abrir uma sala nova</button>
+      </div>
+    </div>
+  );
+}
+
+/** Someone who joins mid-intermission has no roundEnd to show; the clock does. */
+export function WaitVeil({ deadline, serverNow }: { deadline: number; serverNow: () => number }) {
+  const [left, setLeft] = useState(() => deadline - serverNow());
+  useEffect(() => {
+    const id = setInterval(() => setLeft(deadline - serverNow()), 250);
+    return () => clearInterval(id);
+  }, [deadline, serverNow]);
+  return (
+    <div className="veil" role="status">
+      <div className="veil-box">
+        <div className="kicker">você entrou entre rodadas</div>
+        <div className="vtitle">{Math.max(0, Math.ceil(left / 1000))}s</div>
+        <div className="hint" style={{ marginTop: 8 }}>a próxima rodada começa e você joga desde o primeiro palpite.</div>
       </div>
     </div>
   );
