@@ -16,6 +16,7 @@
   // Custom domains, not routes: Cloudflare provisions the certificate and the
   // DNS record itself, and the zone is already on elly/rayden nameservers.
   "routes": [
-    { "pattern": "t3rmo.com", "custom_domain": true }
+    { "pattern": "t3rmo.com", "custom_domain": true },
+    { "pattern": "www.t3rmo.com", "custom_domain": true }
   ]
 }
