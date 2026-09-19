@@ -641,6 +641,9 @@ export default function App() {
               isHost={isHost}
               code={st.room.code}
               feed={st.feed}
+              mode={st.room.mode}
+              rounds={st.room.rounds}
+              format={st.room.cfg.l}
               onStart={() => sock.current?.send({ t: 'start' })}
             />
           )}

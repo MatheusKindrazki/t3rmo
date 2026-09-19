@@ -183,60 +183,79 @@ export function WaitVeil({ deadline, serverNow }: { deadline: number; serverNow:
 }
 
 export function LobbyVeil({
-  online, isHost, onStart, code, feed = [],
+  online, isHost, onStart, code, feed = [], mode = 'termo', rounds = 5, format = 'TERMO',
 }: {
   online: number;
   isHost: boolean;
   onStart: () => void;
   code: string;
   feed?: FeedWire[];
+  mode?: string;
+  rounds?: number;
+  /** Label of the round about to play — 'TERMO' … 'QUARTETO', or 'MISTO'. */
+  format?: string;
 }) {
   const [copied, setCopied] = useState(false);
   const link = `${location.origin}/?sala=${code}`;
   // Newest arrivals first — the lobby's proof of life while people trickle in.
-  const arrivals = feed.filter((f) => f[0] === 'join').slice(-5).reverse();
+  const arrivals = feed.filter((f) => f[0] === 'join').slice(-4).reverse();
+  const copy = () => {
+    navigator.clipboard?.writeText(link).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    }).catch(() => undefined);
+  };
+  const modeLabel = mode === 'misto' ? 'MISTO' : format;
   return (
-    <div className="veil">
-      <div className="veil-box">
+    <div className="veil lobby">
+      <div className="lobby-card">
         <div className="kicker">sala aberta</div>
-        <div className="vtitle">{code}</div>
-        <div className="lobby-count">
-          <span className="lobby-dot" aria-hidden />
-          {/* key on the number so each change replays the tick-up pulse. */}
-          <span className="lobby-n" key={online}>{fmtInt(online)}</span>
-          <span className="lobby-lbl">{online === 1 ? 'na sala' : 'pessoas na sala'}</span>
-        </div>
-        {online >= 2 && online <= 40 && (
-          <div className="hint" style={{ marginTop: 6 }}>começa sozinho em 30s</div>
-        )}
+        <div className="lobby-code">{code}</div>
 
-        {arrivals.length > 0 && (
-          <div className="lobby-feed" aria-live="polite">
-            {arrivals.map((a, i) => (
-              <div className="lobby-in" key={`${a[1]}-${i}`} style={{ opacity: 1 - i * 0.18 }}>
-                <b>{a[1]}</b> entrou
-              </div>
-            ))}
+        <div className="lobby-tags">
+          <span className="ltag" data-hl>{modeLabel}</span>
+          <span className="ltag">{rounds} rodada{rounds > 1 ? 's' : ''}</span>
+          {mode === 'misto' && <span className="ltag">sobe a escada</span>}
+        </div>
+
+        {online <= 1 ? (
+          <div className="lobby-empty">
+            <span className="lobby-dot" aria-hidden />
+            esperando jogadores — mande o convite
           </div>
+        ) : (
+          <>
+            <div className="lobby-live" aria-live="polite">
+              <span className="lobby-dot" aria-hidden />
+              <span className="lobby-n" key={online}>{fmtInt(online)}</span>
+              <span className="lobby-unit">na sala</span>
+            </div>
+            {arrivals.length > 0 && (
+              <div className="lobby-feed" aria-live="polite">
+                {arrivals.map((a, i) => (
+                  <div className="lobby-in" key={`${a[1]}-${i}`} style={{ opacity: 1 - i * 0.24 }}>
+                    <b>{a[1]}</b> entrou
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
 
-        <div style={{ display: 'flex', gap: 8, marginTop: 20, justifyContent: 'center', flexWrap: 'wrap' }}>
-          <button
-            className="btn"
-            data-variant="ghost"
-            onClick={() => {
-              navigator.clipboard?.writeText(link).then(() => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1600);
-              }).catch(() => undefined);
-            }}
-          >
-            {copied ? 'LINK COPIADO' : 'COPIAR CONVITE'}
-          </button>
+        <div className="lobby-cta">
           {isHost && <button className="btn" onClick={onStart}>COMEÇAR AGORA</button>}
+          <button className="btn" data-variant={isHost ? 'ghost' : undefined} onClick={copy}>
+            {copied ? '✓ CONVITE COPIADO' : 'COPIAR CONVITE'}
+          </button>
         </div>
 
-        {!isHost && <div className="hint" style={{ marginTop: 16 }}>quem criou a sala começa a partida</div>}
+        <div className="lobby-note">
+          {isHost
+            ? (online >= 2 && online <= 40
+                ? 'começa sozinho em 30s — ou comece quando quiser'
+                : 'comece quando a sala estiver cheia o bastante')
+            : 'quem abriu a sala começa a partida'}
+        </div>
       </div>
     </div>
   );

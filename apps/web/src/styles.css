@@ -1265,21 +1265,47 @@ html:not([data-marks='on']) .ex-t[data-state]::after { display: none; }
 @keyframes wait-pulse { 0%,100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.15); } }
 @media (prefers-reduced-motion: reduce) { .wait-dot { animation: none; } }
 
-/* Lobby: a living count and a trickle of arrivals, so the wait reads as alive. */
-.lobby-count { display: flex; align-items: baseline; justify-content: center; gap: 10px; margin-top: 14px; }
+/* ---------------------------------------------------------------- lobby (pre-game) */
+.veil.lobby::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(58% 46% at 50% 40%, rgba(79,179,162,.12), transparent 72%);
+}
+.lobby-card {
+  position: relative; z-index: 1; width: 100%; max-width: 440px;
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+}
+.lobby-card .kicker { margin-bottom: 12px; }
+.lobby-code {
+  font-family: var(--f-game); font-weight: 600; letter-spacing: .02em;
+  font-size: clamp(52px, 9vw, 84px); line-height: .95; color: var(--chalk);
+  text-shadow: 0 0 44px rgba(79,179,162,.28);
+}
+.lobby-tags { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+.ltag {
+  font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--mute); padding: 5px 12px; border: 1px solid var(--edge); border-radius: 999px;
+}
+.ltag[data-hl] { color: var(--right-txt); border-color: rgba(79,179,162,.42); background: rgba(79,179,162,.09); }
+
+.lobby-live { display: inline-flex; align-items: center; gap: 12px; margin-top: 30px; }
 .lobby-dot {
-  align-self: center; width: 9px; height: 9px; border-radius: 50%; background: var(--right-txt);
-  animation: wait-pulse 1.2s ease-in-out infinite;
+  width: 9px; height: 9px; border-radius: 50%; background: var(--right-txt);
+  box-shadow: 0 0 10px rgba(79,179,162,.6); animation: wait-pulse 1.2s ease-in-out infinite;
 }
 .lobby-n {
-  font-family: var(--f-game); font-weight: 700; font-size: 40px; line-height: 1; color: var(--chalk);
-  display: inline-block; animation: lobby-bump .34s var(--ease);
+  font-family: var(--f-game); font-weight: 700; line-height: 1; color: var(--chalk);
+  font-size: clamp(44px, 8vw, 66px); display: inline-block; animation: lobby-bump .34s var(--ease);
 }
-.lobby-lbl { font-size: 13px; color: var(--mute); letter-spacing: .04em; }
-@keyframes lobby-bump { 0% { transform: translateY(-3px) scale(1.12); color: var(--right-txt); } 100% { transform: none; } }
-@media (prefers-reduced-motion: reduce) { .lobby-n { animation: none; } .lobby-dot { animation: none; } }
+.lobby-unit { font-size: 14px; color: var(--mute); letter-spacing: .04em; }
+@keyframes lobby-bump { 0% { transform: translateY(-4px) scale(1.14); color: var(--right-txt); } 100% { transform: none; } }
 
-.lobby-feed { margin-top: 14px; display: flex; flex-direction: column; gap: 3px; min-height: 20px; }
+.lobby-empty { display: inline-flex; align-items: center; gap: 10px; margin-top: 30px; color: var(--mute); font-size: 14px; }
+
+.lobby-feed { margin-top: 12px; display: flex; flex-direction: column; align-items: center; gap: 2px; min-height: 18px; }
 .lobby-in { font-size: 12px; color: var(--mute); animation: lobby-in .35s var(--ease); }
 .lobby-in b { color: var(--chalk); font-weight: 600; }
 @keyframes lobby-in { from { opacity: 0; transform: translateY(-4px); } }
+
+.lobby-cta { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 32px; }
+.lobby-note { margin-top: 16px; font-size: 11px; color: var(--dim); letter-spacing: .02em; line-height: 1.7; }
+@media (prefers-reduced-motion: reduce) { .lobby-n, .lobby-dot { animation: none; } }
