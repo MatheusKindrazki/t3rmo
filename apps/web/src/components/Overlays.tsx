@@ -215,3 +215,52 @@ export function LobbyVeil({
     </div>
   );
 }
+
+
+/**
+ * Leaving is cheap to do and expensive to undo, so it asks first.
+ *
+ * The cost is stated rather than implied: mid-match you lose your position and
+ * your cumulative score, and the room does not hold your seat. In the lobby
+ * there is nothing to lose and the copy says so — a warning that cries wolf
+ * about a harmless action teaches people to click through the one that matters.
+ */
+export function LeaveVeil({
+  phase, round, rounds, rank, onCancel, onConfirm,
+}: {
+  phase: string;
+  round: number;
+  rounds: number;
+  rank: number;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const live = phase === 'playing' || phase === 'countdown' || phase === 'intermission';
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.stopPropagation(); onCancel(); }
+    };
+    window.addEventListener('keydown', h, true);
+    return () => window.removeEventListener('keydown', h, true);
+  }, [onCancel]);
+
+  return (
+    <div className="veil" role="alertdialog" aria-modal="true" aria-label="sair da sala">
+      <div className="veil-box">
+        <div className="kicker">{live ? `rodada ${round} de ${rounds} em andamento` : 'sala'}</div>
+        <div className="vtitle">Sair da sala?</div>
+        <p className="hint" style={{ marginTop: 12, maxWidth: 380, marginInline: 'auto' }}>
+          {live
+            ? <>Você perde a posição {rank > 0 ? <b style={{ color: 'var(--you)' }}>#{rank}</b> : 'que tem agora'} e os
+               pontos já somados nesta partida. A sala continua sem você.</>
+            : <>A partida ainda não começou, então não há nada a perder — você pode voltar pelo mesmo código.</>}
+        </p>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 22, flexWrap: 'wrap' }}>
+          <button className="btn" onClick={onCancel} autoFocus>continuar jogando</button>
+          <button className="btn" data-variant="danger" onClick={onConfirm}>sair mesmo assim</button>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -29,7 +29,7 @@ function Clock({ deadline, serverNow }: { deadline: number; serverNow: () => num
 }
 
 export function TopBar({
-  room, online, myRank, prevRank, approx, serverNow, onRules, onProgress,
+  room, online, myRank, prevRank, approx, serverNow, onRules, onProgress, onLeave,
 }: {
   room: RoomSnapshot;
   online: number;
@@ -40,6 +40,7 @@ export function TopBar({
   serverNow: () => number;
   onRules: () => void;
   onProgress: () => void;
+  onLeave: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const moved = prevRank > 0 && myRank > 0 ? prevRank - myRank : 0;
@@ -90,6 +91,7 @@ export function TopBar({
         <div className="hd-icons">
           <button className="ico" onClick={onRules} title="como jogar" aria-label="como jogar">?</button>
           <button className="ico" onClick={onProgress} title="seu progresso" aria-label="seu progresso">▥</button>
+          <button className="ico" data-tone="leave" onClick={onLeave} title="sair da sala" aria-label="sair da sala">⏻</button>
         </div>
       </div>
     </header>

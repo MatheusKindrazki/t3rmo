@@ -11,7 +11,7 @@ import { Pulse } from './components/Pulse.tsx';
 import { Leaderboard } from './components/Leaderboard.tsx';
 import { Boards } from './components/Boards.tsx';
 import { Keyboard } from './components/Keyboard.tsx';
-import { CountdownVeil, RoundEndVeil, MatchEndVeil, LobbyVeil, DeadRoomVeil, WaitVeil } from './components/Overlays.tsx';
+import { CountdownVeil, RoundEndVeil, MatchEndVeil, LobbyVeil, DeadRoomVeil, WaitVeil, LeaveVeil } from './components/Overlays.tsx';
 import { Rules } from './components/Rules.tsx';
 import { Progress } from './components/Progress.tsx';
 import { recordRound, recordMatch } from './lib/stats.ts';
@@ -267,10 +267,13 @@ export default function App() {
   const [conn, setConn] = useState<ConnStatus>('idle');
   const [drawer, setDrawer] = useState(false);
   const [sheet, setSheet] = useState<null | 'rules' | 'progress'>(null);
+  const [leaving, setLeaving] = useState(false);
   const recorded = useRef({ round: -1, match: -1 });
   const [vh, setVh] = useState(() => (typeof window === 'undefined' ? 900 : window.innerHeight));
   const [vw, setVw] = useState(() => (typeof window === 'undefined' ? 1440 : window.innerWidth));
   const sock = useRef<RoomSocket | null>(null);
+  /** Set while leaving on purpose, so the unload guard does not ask twice. */
+  const leavingRef = useRef(false);
 
   const serverNow = useCallback(() => sock.current?.serverNow() ?? Date.now(), []);
 
@@ -320,6 +323,7 @@ export default function App() {
   /** The app had no exit at all: `st.room` was never set back to null, so a
    *  dead room could only be escaped by editing the URL. */
   const leave = useCallback(() => {
+    leavingRef.current = true;
     sock.current?.close();
     sock.current = null;
     const url = new URL(location.href);
@@ -327,6 +331,21 @@ export default function App() {
     history.replaceState(null, '', url);
     location.reload();
   }, []);
+
+  /**
+   * The in-app exit is the polite door; the tab close is the one people
+   * actually walk through by accident. The browser only honours this while a
+   * round is genuinely live, and only after the player has interacted with the
+   * page — which by definition they have, because they typed a guess.
+   */
+  useEffect(() => {
+    const live = st.room?.phase === 'playing' || st.room?.phase === 'countdown';
+    if (!live) return;
+    if (leavingRef.current) return;
+    const h = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', h);
+    return () => window.removeEventListener('beforeunload', h);
+  }, [st.room?.phase]);
 
   useEffect(() => () => sock.current?.close(), []);
   useEffect(() => {
@@ -469,7 +488,7 @@ export default function App() {
           onRules={() => setSheet('rules')} onProgress={() => setSheet('progress')}
         />
         {conn === 'connecting' && <div className="toast">CONECTANDO…</div>}
-        {sheet === 'rules' && <Rules onClose={() => setSheet(null)} />}
+      {sheet === 'rules' && <Rules onClose={() => setSheet(null)} />}
         {sheet === 'progress' && <Progress mode="termo" onClose={() => setSheet(null)} />}
       </>
     );
@@ -486,6 +505,7 @@ export default function App() {
       <TopBar
         room={st.room} online={st.online} myRank={myRank} prevRank={st.prevRank} approx={approx} serverNow={serverNow}
         onRules={() => setSheet('rules')} onProgress={() => setSheet('progress')}
+        onLeave={() => setLeaving(true)}
       />
 
       <div className="stage" data-drawer={drawer}>
@@ -557,6 +577,13 @@ export default function App() {
         />
       </div>
 
+      {leaving && (
+        <LeaveVeil
+          phase={phase} round={st.room.round || 1} rounds={st.room.rounds} rank={myRank}
+          onCancel={() => setLeaving(false)}
+          onConfirm={leave}
+        />
+      )}
       {sheet === 'rules' && <Rules onClose={() => setSheet(null)} />}
       {sheet === 'progress' && <Progress mode={st.room.mode} onClose={() => setSheet(null)} />}
 

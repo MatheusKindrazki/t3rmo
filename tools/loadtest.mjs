@@ -77,6 +77,7 @@ const live = new Map();   // worker id -> latest snapshot
 const finals = new Map();
 const kids = [];
 let hostInfo = null, matchEnded = false, t0 = 0, peakSockets = 0;
+let quorumAt = 0, configSent = false, started = false;
 let lastGuesses = 0, lastAt = 0, rate = 0, lastPrinted = 0;
 
 const sum = (f) => { let n = 0; for (const s of live.values()) n += f(s) || 0; return n; };
@@ -170,7 +171,20 @@ async function main() {
     child.on('message', (m) => {
       if (m.t === 'tick' || m.t === 'final') live.set(m.id, m);
       if (m.t === 'final') finals.set(m.id, m);
-      if (m.t === 'host') hostInfo = m;
+      if (m.t === 'host') {
+        hostInfo = m;
+        // Configure the instant the host is in, while the room is still a
+        // one-player lobby. The server auto-starts 30 s after the SECOND
+        // player arrives, so on any ramp longer than that a config sent after
+        // the ramp lands on a running match and is rejected 'locked' — which
+        // is exactly what happened at --n 5000 --ramp 30000: the fleet played
+        // the server's default 5 rounds instead of the 1 that was asked for,
+        // and nothing in the report said so.
+        if (!CODE_IN && !configSent) {
+          configSent = true;
+          kids[0].send({ t: 'host-config', mode: MODE, rounds: ROUNDS });
+        }
+      }
       if (m.t === 'matchEnd') matchEnded = true;
     });
     child.on('exit', (c) => { if (c !== 0 && c !== null) console.error(`\nworker ${w} saiu com código ${c}`); });
@@ -188,13 +202,28 @@ async function main() {
   }
 
   t0 = Date.now();
-  const timer = setInterval(() => publish('ramp', code), REPORT_MS);
+  const timer = setInterval(() => {
+    publish('ramp', code);
+    if (!quorumAt && aggregate().connected >= 2) quorumAt = Date.now();
+  }, REPORT_MS);
 
-  // Wait out the ramp, then let the room settle before anyone starts.
+  // Wait out the ramp, then let the room settle before anyone starts — but
+  // never past the server's own auto-start, or it starts the match for us with
+  // the wrong settings. AUTOSTART_MS is 30 s from quorum; 24 s leaves room for
+  // the config round trip.
   const rampEnd = rampStart + RAMP_MS;
-  while (Date.now() < rampEnd) await sleep(200);
-  await sleep(2500);
+  const settled = () => Date.now() >= rampEnd + 2500;
+  let forced = false;
+  while (!settled()) {
+    if (!CODE_IN && quorumAt && Date.now() >= quorumAt + 24_000) { forced = true; break; }
+    await sleep(200);
+  }
   clearInterval(timer);
+  if (forced) {
+    const a = aggregate();
+    console.log(`\naviso: o servidor auto-inicia 30 s após o 2º jogador; começando com ${a.connected}/${N} conectados.`);
+    console.log('       os bots restantes entram com a partida em curso. Para evitar, use --ramp menor que 20000.');
+  }
 
   const a0 = aggregate();
   console.log(`\nconectados ${a0.connected}/${N} · join confirmado ${a0.joined} · fechados ${a0.closed}`);
@@ -205,9 +234,13 @@ async function main() {
     if (hostInfo && hostInfo.you && hostInfo.you.isHost === false) {
       console.log('aviso: o bot 0 não é o host desta sala — não vou configurar nem começar');
     }
-    kids[0].send({ t: 'host-config', mode: MODE, rounds: ROUNDS });
-    await sleep(400);
-    kids[0].send({ t: 'host-start' });
+    if (!configSent) { configSent = true; kids[0].send({ t: 'host-config', mode: MODE, rounds: ROUNDS }); await sleep(400); }
+    if (sum((s) => s.roundStarts) > 0) {
+      console.log('aviso: a partida já estava em curso quando o ramp terminou — não vou reiniciá-la');
+    } else {
+      started = true;
+      kids[0].send({ t: 'host-start' });
+    }
   } else {
     console.log('aguardando o humano começar a partida…');
   }

@@ -138,8 +138,21 @@ input { font: inherit; color: inherit; }
   grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--rail-w);
   min-height: 0;
 }
-@media (max-width: 1280px) { .stage { grid-template-columns: minmax(0, 1fr) var(--rail-w); } .rail-l { display: none; } }
-@media (max-width: 900px)  { .stage { grid-template-columns: minmax(0, 1fr); } .rail-r { display: none; } }
+/* Rails need room in BOTH axes, and the queries have to say so.
+   Width-only breakpoints are what browser zoom exposes: at 200% the viewport
+   shrinks in CSS pixels in both directions at once, and a layout that only
+   asks about width keeps three columns in a box that is now too short for any
+   of them, so the board paints over the keyboard and the rails pile up. The
+   height terms below retire the rails when there is no vertical room, whatever
+   the width says. */
+@media (max-width: 1280px), (max-height: 620px) {
+  .stage { grid-template-columns: minmax(0, 1fr) var(--rail-w); }
+  .rail-l { display: none; }
+}
+@media (max-width: 900px), (max-height: 520px) {
+  .stage { grid-template-columns: minmax(0, 1fr); }
+  .rail-r { display: none; }
+}
 
 /* ------------------------------------------------------------------ header */
 
@@ -189,7 +202,7 @@ input { font: inherit; color: inherit; }
 
 /* ------------------------------------------------------------------ rails */
 
-.rail { display: flex; flex-direction: column; min-height: 0; background: var(--rail); }
+.rail { display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: var(--rail); }
 .rail-l { border-right: 1px solid var(--edge-dark); }
 .rail-r { border-left: 1px solid var(--edge-dark); }
 
@@ -283,10 +296,18 @@ input { font: inherit; color: inherit; }
 
 /* Everything below is term.ooo's geometry: a 720px cap, board centred and
    sized off remaining height, keyboard pinned under it. */
-.play { display: flex; flex-direction: column; align-items: center; min-height: 0; position: relative; }
+/* min-height:0 the whole way down, and the board area scrolls.
+   Without it a grid/flex child refuses to shrink below its content and the
+   overflow lands on top of whatever is next — which, with `overflow: hidden`
+   on body, is permanent and unreachable. This is the difference between a
+   cramped board and a broken screen. */
+.play { display: flex; flex-direction: column; align-items: center; min-height: 0; overflow: hidden; position: relative; }
 .col { width: 100%; max-width: var(--col); display: flex; flex-direction: column; min-height: 0; flex: 1; }
 
-.boards-wrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 10px 8px; }
+.boards-wrap {
+  flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  padding: 10px 8px; overflow: auto; overscroll-behavior: contain;
+}
 .boards { display: grid; gap: 20px; justify-content: center; align-content: center; }
 .boards[data-n='1'] { grid-template-columns: auto; }
 .boards[data-n='2'] { grid-template-columns: auto auto; }
@@ -362,7 +383,7 @@ input { font: inherit; color: inherit; }
 
 /* ------------------------------------------------------------------ keyboard */
 
-.kb { padding: 6px 6px 12px; display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.kb { padding: 6px 6px 12px; display: flex; flex-direction: column; gap: 6px; width: 100%; flex-shrink: 0; }
 .kb-r { display: flex; gap: 5px; justify-content: center; }
 
 .key {
@@ -981,3 +1002,23 @@ html:not([data-marks='on']) .ex-t[data-state]::after { display: none; }
 }
 .ex-t[data-state='2']::after { background: var(--chalk); }
 .ex-t[data-state='1']::after { border: 1.5px solid var(--ink); }
+
+.ico[data-tone='leave']:hover { color: var(--live-txt); border-color: var(--live-txt); }
+.btn[data-variant='danger'] {
+  background: transparent; color: var(--live-txt);
+  border: 1px solid var(--live-txt);
+}
+.btn[data-variant='danger']:hover:not(:disabled) { background: var(--live); color: #fff; border-color: var(--live); }
+
+
+/* The keyboard is the only thing on screen with a fixed appetite, so it is the
+   thing that gives way when the viewport gets short — browser zoom, a small
+   laptop, a split window. Shrinking it is always better than pushing the board
+   off the top, because a board you cannot see is a round you cannot play. */
+@media (max-height: 760px) { .key { height: 42px; font-size: 13px; } .kb { gap: 5px; } }
+@media (max-height: 640px) { .key { height: 36px; font-size: 12px; } .kb { gap: 4px; padding-bottom: 8px; } }
+@media (max-height: 540px) {
+  .key { height: 30px; font-size: 11px; }
+  .hd { --header: 44px; }
+  .shell { grid-template-rows: 44px 1fr; }
+}

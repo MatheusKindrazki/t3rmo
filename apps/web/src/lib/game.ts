@@ -48,7 +48,15 @@ export function modeOf(m: Mode) { return MODES[m]; }
  */
 export function tilePx(boards: number, maxGuesses: number, vw: number, vh: number): number {
   const [gx, gy] = GRID[boards] ?? [1, 1];
-  const GAP = 5, BOARD_GAP = 20, HEADER = 54, KBD = 190, PAD = 44, RAILS = vw > 1280 ? 520 : vw > 900 ? 260 : 0;
+  // The keyboard's height is not a constant — it shrinks on short viewports
+  // (see the max-height rules in styles.css) and the tile fit has to use the
+  // same number the stylesheet does, or the board is sized against a keyboard
+  // that is no longer there. Same for the header and for the rails, which the
+  // height terms in those queries can retire even on a wide screen.
+  const GAP = 5, BOARD_GAP = 20, PAD = 44;
+  const HEADER = vh <= 540 ? 44 : 54;
+  const KBD = vh <= 540 ? 120 : vh <= 640 ? 140 : vh <= 760 ? 162 : 190;
+  const RAILS = vw > 1280 && vh > 620 ? 520 : (vw > 900 && vh > 520) ? 260 : 0;
   const colW = Math.min(vw - RAILS - 24, 720);
   const wFit = (colW - (gx - 1) * BOARD_GAP) / gx / 5 - GAP;
   const hFit = (vh - HEADER - KBD - PAD - (gy - 1) * BOARD_GAP) / gy / maxGuesses - GAP;
