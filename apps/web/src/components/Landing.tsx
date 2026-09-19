@@ -37,7 +37,7 @@ export function Landing({
   name: string;
   setName: (n: string) => void;
   onCreate: (mode: Mode, rounds: number) => void;
-  onJoin: (code: string) => void;
+  onJoin: (code: string) => void | Promise<void>;
   busy: boolean;
   error: string | null;
   onRules: () => void;

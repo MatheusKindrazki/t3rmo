@@ -281,9 +281,9 @@ export default function App() {
 
   /* ------------------------------------------------------------ connection */
 
-  const enter = useCallback((code: string, nick: string) => {
+  const enter = useCallback((code: string, nick: string, isNew = false) => {
     sock.current?.close();
-    const s = new RoomSocket(code, nick || 'anon', loadClientId());
+    const s = new RoomSocket(code, nick || 'anon', loadClientId(), isNew);
     s.on((m) => dispatch({ k: 'msg', m }));
     s.onStatus(setConn);
     s.connect();
@@ -300,7 +300,7 @@ export default function App() {
       if (!res.ok) throw new Error(`servidor respondeu ${res.status}`);
       const { code } = (await res.json()) as { code: string };
       saveName(name);
-      enter(code, name);
+      enter(code, name, true);
       // The room is created in lobby; the host picks the format from here.
       setTimeout(() => sock.current?.send({ t: 'config', mode, rounds }), 250);
     } catch (e) {
@@ -310,10 +310,29 @@ export default function App() {
     }
   }, [name, enter]);
 
-  const join = useCallback((code: string) => {
+  const join = useCallback(async (code: string) => {
+    const up = code.toUpperCase();
     saveName(name);
     setError(null);
-    enter(code.toUpperCase(), name);
+    setBusy(true);
+    try {
+      // Ask before connecting. Connecting first would CREATE the room, which is
+      // exactly the bug: a typo made you the host of an empty lobby identical
+      // to the one you meant to join.
+      const res = await fetch(`/api/rooms/${encodeURIComponent(up)}/info`);
+      if (res.ok) {
+        const info = (await res.json()) as { created?: boolean };
+        if (info.created === false) {
+          setError(`a sala ${up} não existe — confira o código`);
+          return;
+        }
+      }
+    } catch {
+      // A failed check is not proof the room is missing; let the socket try.
+    } finally {
+      setBusy(false);
+    }
+    enter(up, name);
   }, [name, enter]);
 
   // Deep link: /?sala=A7X drops you straight into the room.

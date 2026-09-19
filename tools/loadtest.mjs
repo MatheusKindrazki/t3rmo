@@ -112,7 +112,9 @@ function publish(phase, code) {
   if (lastAt) rate = ((a.guesses - lastGuesses) * 1000) / Math.max(1, now - lastAt);
   lastGuesses = a.guesses; lastAt = now;
   const doc = {
-    ts: now, phase, code, mode: MODE, rounds: ROUNDS, target: N, host: HOST,
+    // With --code the human owns the room, so OUR --mode was never sent; echoing
+    // it in the watcher would state a fact we did not establish.
+    ts: now, phase, code, mode: CODE_IN ? 'host decide' : MODE, rounds: ROUNDS, target: N, host: HOST,
     elapsed: t0 ? (now - t0) / 1000 : 0, rate, agg: a,
     workers: [...live.values()].map((s) => ({
       id: s.id, sockets: s.sockets, closed: s.closed, guesses: s.guesses,
@@ -155,7 +157,8 @@ async function main() {
     else console.log(`aviso: o servidor não conhece o modo "${MODE}" (conhece: ${(h.modes || []).map((m) => m.id).join(', ')})`);
   } catch { console.log('aviso: /api/health não respondeu; usando relógio de rodada conservador'); }
 
-  console.log(`sala ${code} · ${N} bots · modo ${MODE} (boards ${boardsHint}) · ${ROUNDS} rodada(s) · ${WORKERS} worker(s) · ramp ${RAMP_MS} ms`);
+  const modeLabel = CODE_IN ? 'definido pelo host (entrando numa sala existente)' : `${MODE} (boards ${boardsHint}) · ${ROUNDS} rodada(s)`;
+  console.log(`sala ${code} · ${N} bots · modo ${modeLabel} · ${WORKERS} worker(s) · ramp ${RAMP_MS} ms`);
   console.log(`status ao vivo: node tools/fleetwatch.mjs${STATUS_FILE !== STATUS_PATH ? ` --status ${STATUS_FILE}` : ''}\n`);
 
   // Slices are contiguous so bot 0 — the host when we own the room — is worker
@@ -319,7 +322,15 @@ function report(code, roundMs) {
   // quoting that as "KB/socket" would put the capacity estimate off by 20x.
   const marginal = Math.max(0, a.rss - a.rss0);
   console.log(`  RSS somado dos workers   : ${fmtBytes(a.rss)} (base ${fmtBytes(a.rss0)} + ${fmtBytes(marginal)} de carga)`);
-  console.log(`  custo marginal do socket : ${a.peakSockets ? (marginal / a.peakSockets / 1024).toFixed(1) : 0} KB · projeção 10k = ${a.peakSockets ? fmtBytes((marginal / a.peakSockets) * 10000) : 'n/d'}`);
+  // Extrapolating from a few hundred sockets is noise: JIT warmup and the
+  // one-off word pool dominate the delta, and the same arithmetic that reads
+  // 127 KB/socket at 5000 reads 750 KB/socket at 60. Quote the projection only
+  // where the baseline has been paid off.
+  const perSocket = a.peakSockets ? marginal / a.peakSockets : 0;
+  console.log(`  custo marginal do socket : ${(perSocket / 1024).toFixed(1)} KB` +
+    (a.peakSockets >= 1000
+      ? ` · projeção 10k = ${fmtBytes(perSocket * 10000)}`
+      : ' · (amostra pequena demais para projetar — precisa de >=1000 sockets)'));
 
   verdict({ a, lat, rtt, hand, gap, roundMs, code });
 }

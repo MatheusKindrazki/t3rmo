@@ -35,6 +35,17 @@ export class RoomSocket {
     private readonly code: string,
     private readonly name: string,
     private readonly clientId: string,
+    /**
+     * True only for the socket that opens a freshly minted room.
+     *
+     * A Durable Object is materialised by name, so `idFromName('A7X9')`
+     * happily creates a room for any code — which meant a typo dropped you
+     * into a brand-new empty lobby that looked exactly like your friend's, and
+     * you waited for people who were in a different room. The server marks a
+     * room as real only when this flag arrives, and the join path checks
+     * /info before connecting.
+     */
+    private readonly isNew = false,
   ) {}
 
   on(fn: Listener): () => void {
@@ -55,7 +66,8 @@ export class RoomSocket {
     this.closedByUs = false;
     this.setStatus('connecting');
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/api/rooms/${encodeURIComponent(this.code)}/ws`);
+    const q = this.isNew ? '?new=1' : '';
+    const ws = new WebSocket(`${proto}://${location.host}/api/rooms/${encodeURIComponent(this.code)}/ws${q}`);
     this.ws = ws;
 
     ws.onopen = () => {
