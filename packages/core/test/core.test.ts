@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluate, normalize, isSolved } from '../src/evaluate.ts';
-import { MODES, MODE_IDS } from '../src/modes.ts';
-import { scoreRound, compareStandings, assertAttemptsDominate, type Standing } from '../src/scoring.ts';
+import { MODES, MODE_IDS, MISTO_RUNGS, ROUND_CONFIGS, roundConfig } from '../src/modes.ts';
+import {
+  scoreRound, compareStandings, assertAttemptsDominate, type Standing,
+  WORD_POINTS, ATTEMPT_STEP, SPEED_MAX, PERFECT_BONUS, STREAK_MAX,
+} from '../src/scoring.ts';
 import { isValidGuess, drawAnswers, ANSWERS } from '../src/dict.ts';
 
 test('normalize bridges accents so players can type plainly', () => {
@@ -37,8 +40,90 @@ test('accented answer is solved by the unaccented guess', () => {
   assert.equal(isSolved(evaluate('ACIDO', 'ÁCIDO')), true);
 });
 
-test('fewer attempts always beats more attempts, at every mode', () => {
-  for (const id of MODE_IDS) assertAttemptsDominate(MODES[id]);
+test('fewer attempts always beats more attempts, in every playable config', () => {
+  // ROUND_CONFIGS and not MODES: each MISTO rung governs real rounds under an
+  // id that MODES maps to something else entirely.
+  for (const cfg of ROUND_CONFIGS) assertAttemptsDominate(cfg);
+  assert.ok(ROUND_CONFIGS.length >= MODE_IDS.length + MISTO_RUNGS.length);
+});
+
+test('the bounty rewrite pays exactly what the flat per-word award paid', () => {
+  // The entire safety argument for adding MISTO is that bounty / boards is
+  // exactly WORD_POINTS for every single-format mode, so the new expression
+  // cannot move a point of an existing match. Asserted over the whole legal
+  // input space rather than spot-checked, because "should be equivalent" is the
+  // kind of claim that is true for the three cases somebody tried.
+  let checked = 0;
+  for (const id of MODE_IDS) {
+    const m = MODES[id];
+    assert.equal(m.bounty, WORD_POINTS * m.boards, `${id} is not a flat-rate mode`);
+    for (let wordsSolved = 0; wordsSolved <= m.boards; wordsSolved++) {
+      for (let guessesUsed = m.boards; guessesUsed <= m.maxGuesses; guessesUsed++) {
+        for (const elapsedMs of [0, 1000, m.roundMs]) {
+          for (let streakBefore = 0; streakBefore <= 6; streakBefore++) {
+            const got = scoreRound({ wordsSolved, guessesUsed, elapsedMs, streakBefore }, m);
+            assert.equal(got.words, WORD_POINTS * wordsSolved,
+              `${id} w=${wordsSolved} g=${guessesUsed} t=${elapsedMs} s=${streakBefore}`);
+            checked++;
+          }
+        }
+      }
+    }
+  }
+  assert.ok(checked > 500, `only ${checked} combinations covered`);
+});
+
+test('MISTO escalates TERMO to QUARTETO and then cycles', () => {
+  const shape = (round: number) => {
+    const c = roundConfig('misto', round);
+    return [c.label, c.boards, c.maxGuesses];
+  };
+  assert.deepEqual(shape(1), ['TERMO', 1, 6]);
+  assert.deepEqual(shape(2), ['DUETO', 2, 7]);
+  assert.deepEqual(shape(3), ['TRIETO', 3, 8]);
+  assert.deepEqual(shape(4), ['QUARTETO', 4, 9]);
+  assert.deepEqual(shape(5), shape(1), 'a fifth round starts the ladder over');
+  assert.deepEqual(shape(8), shape(4));
+  // The lobby sits on round 0 and has to preview something; rung 1 is what the
+  // room is about to play.
+  assert.deepEqual(shape(0), shape(1));
+  for (const id of MODE_IDS) {
+    if (id === 'misto') continue;
+    assert.equal(roundConfig(id, 3), MODES[id], `${id} must ignore the round number`);
+  }
+});
+
+test('escalating in MISTO is never a shortcut past a strong early round', () => {
+  // The constraint the 250-point bounty step exists to satisfy. A sloppy late
+  // round must not outscore a sharp early one just for being worth more.
+  const strongTermo = scoreRound(
+    { wordsSolved: 1, guessesUsed: 3, elapsedMs: 30_000, streakBefore: 0 },
+    MODES.termo,
+  ).total;
+  const sloppiestQuarteto = scoreRound(
+    { wordsSolved: 4, guessesUsed: 9, elapsedMs: MISTO_RUNGS[3]!.roundMs, streakBefore: 99 },
+    MISTO_RUNGS[3]!,
+  ).total;
+  assert.equal(strongTermo, 2983);
+  assert.ok(sloppiestQuarteto < strongTermo,
+    `the worst full QUARTETO (${sloppiestQuarteto}) must lose to a sharp TERMO (${strongTermo})`);
+});
+
+test('MISTO rungs pay within 1.16:1 of each other, the flat modes 1.625:1', () => {
+  // The whole point of the compressed bounties: which rung you happen to be
+  // strongest at should not decide the match.
+  const ceiling = (m: typeof MODES.termo) =>
+    scoreRound({ wordsSolved: m.boards, guessesUsed: m.boards, elapsedMs: 0, streakBefore: 99 }, m).total;
+  const rungs = MISTO_RUNGS.map(ceiling);
+  assert.deepEqual(rungs, [4800, 5050, 5300, 5550]);
+  // Every ceiling is its bounty plus the format-blind maximum, which is what
+  // makes bounty the only balancing dial there is.
+  const blind = ATTEMPT_STEP * 5 + SPEED_MAX + PERFECT_BONUS + STREAK_MAX;
+  assert.deepEqual(rungs, MISTO_RUNGS.map((m) => m.bounty + blind));
+  assert.ok(rungs[3]! / rungs[0]! < 1.16, `spread ${rungs[3]! / rungs[0]!}`);
+  const flat = [MODES.termo, MODES.dueto, MODES.trieto, MODES.quarteto].map(ceiling);
+  assert.deepEqual(flat, [4800, 5800, 6800, 7800]);
+  assert.ok(flat[3]! / flat[0]! > 1.6, 'the single-format spread is the thing MISTO compresses');
 });
 
 test('the attempts axis outranks the clock, concretely', () => {

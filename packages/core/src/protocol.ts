@@ -73,6 +73,26 @@ export type RowWire = [number, string, string, number, number, number, 0 | 1];
 export type FeedWire = [FeedKind, string, number];
 export type FeedKind = 'solve' | 'lead' | 'join' | 'perfect' | 'out';
 
+/**
+ * The round's effective shape: boards, guess budget, label.
+ *
+ * Short keys because this rides in every `state` frame the room fans out, and
+ * a lobby of thousands gets one on every host config change. It is not in
+ * `tick`, so the three fields cost nothing on the hot path.
+ *
+ * It exists because `mode` stopped being enough to derive the board count: a
+ * MISTO room plays a different format every round, and a client sizing its grid
+ * from MODES[room.mode] would draw one board through a QUARTETO.
+ */
+export interface RoundCfgWire {
+  /** Boards in play this round. */
+  b: number;
+  /** Guesses allowed this round. */
+  g: number;
+  /** What to call this round — 'TERMO', 'QUARTETO', … even inside MISTO. */
+  l: string;
+}
+
 export interface RoomSnapshot {
   code: string;
   mode: Mode;
@@ -83,6 +103,8 @@ export interface RoomSnapshot {
   /** Absolute server-clock deadline of the current phase, in ms. */
   deadline: number;
   hostId: string | null;
+  /** Config of the round in progress, or of the next one while in lobby. */
+  cfg: RoundCfgWire;
 }
 
 /** Everything a player needs to redraw their own boards from scratch. */
@@ -147,7 +169,20 @@ export type ServerMessage =
       you: { score: number; rank: number; solvedWords: number; guesses: number; roundScore: number } | null;
       podium: RowWire[];
     }
-  | { t: 'matchEnd'; room: RoomSnapshot; standings: RowWire[]; you: { rank: number; score: number } | null }
+  | {
+      t: 'matchEnd';
+      room: RoomSnapshot;
+      standings: RowWire[];
+      /**
+       * The final round's words. They are here as well as in `roundEnd` because
+       * the last round never passes through an intermission — `endRound` has
+       * already set the phase to 'finished' by the time its frame is built — so
+       * a reveal gated on 'intermission' would never fire for the round the
+       * whole match ended on.
+       */
+      answers: string[];
+      you: { rank: number; score: number } | null;
+    }
   | { t: 'page'; from: number; rows: RowWire[]; total: number }
   | { t: 'pong'; ts: number; now: number }
   | { t: 'error'; code: string; message: string };

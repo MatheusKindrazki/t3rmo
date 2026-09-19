@@ -55,7 +55,12 @@ export function scoreRound(perf: RoundPerformance, mode: ModeConfig): RoundScore
   const fullSolve = perf.wordsSolved >= boards;
 
   // Partial credit always counts: cracking 3 of 4 boards in QUARTETO is real work.
-  const words = Math.max(0, Math.min(boards, perf.wordsSolved)) * WORD_POINTS;
+  //
+  // The bounty is a round total rather than a per-word rate because this is the
+  // one term that distinguishes one format from another — see ModeConfig.bounty.
+  // For every single-format mode bounty / boards is exactly WORD_POINTS, so this
+  // is the flat per-word award it replaced, to the point.
+  const words = Math.round((mode.bounty * Math.max(0, Math.min(boards, perf.wordsSolved))) / boards);
 
   let attempts = 0;
   let speed = 0;
@@ -85,6 +90,9 @@ export function scoreRound(perf: RoundPerformance, mode: ModeConfig): RoundScore
  * Proves the headline promise for a mode: the worst imaginable round at k
  * guesses still outscores the best imaginable round at k+1 — slowest possible
  * clock and zero streak against instant solve on a maxed streak.
+ *
+ * Takes a config, not a mode id, because a MISTO rung is a config that no entry
+ * of MODES is equal to. Run it over ROUND_CONFIGS.
  */
 export function assertAttemptsDominate(mode: ModeConfig): void {
   for (let g = mode.boards; g < mode.maxGuesses; g++) {
@@ -98,7 +106,7 @@ export function assertAttemptsDominate(mode: ModeConfig): void {
     ).total;
     if (worstAtK <= bestAtKPlus1) {
       throw new Error(
-        `scoring invariant broken in ${mode.id}: ${g} guesses at the buzzer with no streak ` +
+        `scoring invariant broken in ${mode.id}/${mode.label}: ${g} guesses at the buzzer with no streak ` +
           `(${worstAtK}) does not beat ${g + 1} guesses instantly on a full streak (${bestAtKPlus1})`,
       );
     }

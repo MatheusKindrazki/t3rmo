@@ -33,6 +33,10 @@ const MODE = arg('mode', 'termo');
 const ROUNDS = Number(arg('rounds', 1));
 const RAMP_MS = Number(arg('ramp', 8000));
 const SAMPLE = 25; // sockets whose inbound frames get measured in detail
+// Local wrangler is plain http; anything else is the real edge behind TLS.
+const LOCAL = /^(127\.0\.0\.1|localhost|\[::1\])(:|$)/.test(HOST);
+const HTTP = LOCAL ? 'http' : 'https';
+const WS = LOCAL ? 'ws' : 'wss';
 
 const normalize = (w) =>
   w.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z]/g, '');
@@ -75,7 +79,7 @@ class Bot {
     this.pending = new Map();
     this.boards = 1;
     this.playing = false;
-    this.ws = new WebSocket(`ws://${HOST}/api/rooms/${code}/ws`);
+    this.ws = new WebSocket(`${WS}://${HOST}/api/rooms/${code}/ws`);
     this.ws.onopen = () => {
       stats.connected++;
       this.send({ t: 'join', name: `bot${String(i).padStart(4, '0')}`, clientId: `load-${i}-${Date.now()}`, v: 1 });
@@ -166,7 +170,7 @@ const main = async () => {
   // the test mints its own.
   let code = arg('code', '');
   if (!code) {
-    const res = await fetch(`http://${HOST}/api/rooms`, { method: 'POST' });
+    const res = await fetch(`${HTTP}://${HOST}/api/rooms`, { method: 'POST' });
     ({ code } = await res.json());
   }
   console.log(`sala ${code} · ${N} bots · modo ${MODE} · ${ROUNDS} rodada(s)\n`);

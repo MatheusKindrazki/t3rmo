@@ -1,5 +1,5 @@
 import {
-  MODES, type Mode, isMode, WORD_LENGTH,
+  type Mode, type ModeConfig, isMode, WORD_LENGTH, roundConfig, ROUND_CONFIGS,
   evaluate, isSolved, normalize, type Tile,
   scoreRound, compareStandings, assertAttemptsDominate, type Standing,
   TICK_MS, tickMsFor, EXACT_RANK_LIMIT, CUT_RANKS, SPY_N,
@@ -10,8 +10,10 @@ import {
 } from '@arena/core';
 import { isValidGuess, drawAnswers } from '@arena/core/dict';
 
-// Loud at isolate start rather than silently mis-ranking a live room.
-for (const id of Object.keys(MODES) as Mode[]) assertAttemptsDominate(MODES[id]);
+// Loud at isolate start rather than silently mis-ranking a live room. Over
+// ROUND_CONFIGS, not MODES: a MISTO rung governs real rounds and is not an
+// entry of MODES, so checking MODES alone would leave four formats unproven.
+for (const cfg of ROUND_CONFIGS) assertAttemptsDominate(cfg);
 
 const COUNTDOWN_MS = 5_000;
 const INTERMISSION_MS = 8_000;
@@ -70,7 +72,16 @@ interface Persisted {
   answers: string[];
   /** Set when 2+ players are present in lobby, drives auto-start. */
   quorumAt: number;
+  /**
+   * True only for a room somebody deliberately opened. See `fetch`: a Durable
+   * Object exists for any code that gets addressed, so this flag — not the
+   * object — is what tells a typist their room is not real.
+   */
+  created: boolean;
 }
+
+/** What actually comes back from storage: rooms predating `created` lack it. */
+type StoredMeta = Omit<Persisted, 'created'> & { created?: boolean };
 
 export class Room implements DurableObject {
   private readonly state: DurableObjectState;
@@ -84,15 +95,23 @@ export class Room implements DurableObject {
   private feed: FeedWire[] = [];
   private ranks = new Map<string, number>();
   private order: Standing[] = [];
+  /** Who held rank 1 at the last recompute, so a change can be announced once. */
+  private leaderId: string | null = null;
 
   constructor(state: DurableObjectState, _env: unknown) {
     this.state = state;
     this.state.blockConcurrencyWhile(async () => {
-      const stored = await this.state.storage.get<Persisted>('meta');
-      this.meta = stored ?? {
-        code: 'SALA', seed: crypto.randomUUID(), mode: 'termo', phase: 'lobby',
-        round: 0, rounds: DEFAULT_ROUNDS, deadline: 0, hostId: null, answers: [], quorumAt: 0,
-      };
+      const stored = await this.state.storage.get<StoredMeta>('meta');
+      this.meta = stored
+        // A stored room without the flag is grandfathered in. Erring permissive
+        // is deliberate: telling someone their real room does not exist is a
+        // worse failure than one legacy typo'd room still resolving.
+        ? { ...stored, created: stored.created ?? true }
+        : {
+            code: 'SALA', seed: crypto.randomUUID(), mode: 'termo', phase: 'lobby',
+            round: 0, rounds: DEFAULT_ROUNDS, deadline: 0, hostId: null, answers: [],
+            quorumAt: 0, created: false,
+          };
       this.rehydrate();
       this.loaded = true;
     });
@@ -123,8 +142,25 @@ export class Room implements DurableObject {
     if (!this.loaded) return new Response('starting', { status: 503 });
     const url = new URL(req.url);
 
+    // A Durable Object springs into existence the moment anyone addresses it,
+    // so typing A7X9 for A7XQ used to hand the typist a pristine lobby that
+    // looks exactly like the room they meant to join — same code in the header,
+    // host badge and all, and their friends never arrive. Existence therefore
+    // cannot answer "does this room exist"; a flag only the create path sets is.
+    //
+    // ?new=1 is that path. It is a query parameter because the worker forwards
+    // the client's search string to us untouched, so this needs no change in
+    // index.ts. Contract for apps/web: the client that just minted a code
+    // connects with ?new=1; a client joining an existing code GETs /info first
+    // and shows "sala não existe" when `created` is false, instead of
+    // connecting and materialising the ghost.
+    if (url.searchParams.get('new') === '1' && !this.meta.created) {
+      this.meta.created = true;
+      await this.save();
+    }
+
     if (url.pathname.endsWith('/info')) {
-      return Response.json({ ...this.snapshot(), now: Date.now() });
+      return Response.json({ ...this.snapshot(), created: this.meta.created, now: Date.now() });
     }
     if (req.headers.get('Upgrade') !== 'websocket') {
       return new Response('expected websocket', { status: 426 });
@@ -159,8 +195,28 @@ export class Room implements DurableObject {
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
+    const gone = this.cache.get(ws);
     this.cache.delete(ws);
     this.dirty = true;
+
+    if (gone) {
+      this.pushFeed(['out', gone.name, this.cache.size]);
+      // Host was only ever reassigned on the next join, which a two-person
+      // lobby does not get: the host drops, the survivor cannot start, and
+      // autostart needs two players. The room just sits there.
+      //
+      // `hasPlayer` guards the reconnect race — the dropped socket's close can
+      // land after the same player is already back on a new one, and demoting
+      // them for their own reconnect would be wrong.
+      if (this.meta.hostId === gone.id && !this.hasPlayer(gone.id)) {
+        // Insertion order is the only ordering the room keeps, so the first
+        // entry is the earliest socket still attached.
+        const next = this.cache.values().next();
+        this.meta.hostId = next.done ? null : next.value.id;
+        await this.save();
+        this.broadcastState();
+      }
+    }
     await this.maybeScheduleAlarm();
   }
 
@@ -190,13 +246,35 @@ export class Room implements DurableObject {
     const id = typeof msg.clientId === 'string' && msg.clientId.length >= 8
       ? msg.clientId.slice(0, 40) : crypto.randomUUID();
 
-    const boards = MODES[this.meta.mode].boards;
-    const existing = this.cache.get(ws);
-    const a: Attached = existing ?? {
-      id, name, guesses: [], solved: new Array(boards).fill(false),
+    // A reconnect always arrives on a NEW WebSocket object, so the socket can
+    // never be the key that finds the player again — only clientId can, and it
+    // was being used for nothing but minting an id. The old lookup therefore
+    // never matched: a three-second tunnel silently minted a fresh player with
+    // guesses, score, streak and totalGuesses back to zero, and the `state`
+    // frame sent below overwrote the board still on the player's screen.
+    // net.ts promises the opposite — "costs you position but not progress" —
+    // so this is the code catching up with the promise.
+    const prior = this.evictById(id, ws);
+
+    const cfg = this.roundCfg();
+    const a: Attached = prior ?? {
+      id, name, guesses: [], solved: new Array(cfg.boards).fill(false),
       score: 0, roundScore: 0, streak: 0, totalGuesses: 0,
       timeMs: 0, totalTimeMs: 0, round: this.meta.round, lastGuessAt: 0,
     };
+    if (prior && prior.round !== this.meta.round) {
+      // Back after a round boundary. Match totals — score, streak, totalGuesses,
+      // totalTimeMs — are exactly what must survive; the per-round fields
+      // describe a round that is over. `solved` is rebuilt rather than cleared
+      // in place because in MISTO the round they left was not the same shape as
+      // this one.
+      a.guesses = [];
+      a.solved = new Array(cfg.boards).fill(false);
+      a.roundScore = 0;
+      a.timeMs = 0;
+      a.lastGuessAt = 0;
+      a.round = this.meta.round;
+    }
     a.name = name;
     this.attach(ws, a);
 
@@ -209,7 +287,9 @@ export class Room implements DurableObject {
       await this.save();
     }
 
-    this.pushFeed(['join', a.name, this.cache.size]);
+    // A reconnect is not an arrival. Announcing it would let one flaky
+    // connection fill the feed with its own name.
+    if (!prior) this.pushFeed(['join', a.name, this.cache.size]);
     this.send(ws, {
       t: 'welcome',
       you: { id: a.id, name: a.name, isHost: a.id === this.meta.hostId },
@@ -224,7 +304,7 @@ export class Room implements DurableObject {
   private async onGuess(ws: WebSocket, msg: Extract<ClientMessage, { t: 'guess' }>): Promise<void> {
     const a = this.cache.get(ws);
     if (!a) return;
-    const cfg = MODES[this.meta.mode];
+    const cfg = this.roundCfg();
     const seq = Number(msg.seq) || 0;
 
     if (this.meta.phase !== 'playing') {
@@ -337,6 +417,7 @@ export class Room implements DurableObject {
 
   private async beginMatch(): Promise<void> {
     this.meta.round = 0;
+    this.leaderId = null;
     for (const [ws, a] of this.cache) {
       a.score = 0; a.roundScore = 0; a.streak = 0; a.totalGuesses = 0; a.totalTimeMs = 0;
       this.attach(ws, a);
@@ -354,8 +435,11 @@ export class Room implements DurableObject {
   }
 
   private async startRound(): Promise<void> {
-    const cfg = MODES[this.meta.mode];
+    // The increment comes first: in MISTO the round number IS the format, so
+    // reading the config before bumping it would deal round N the board count,
+    // guess budget and clock of round N-1.
     this.meta.round += 1;
+    const cfg = this.roundCfg();
     this.meta.phase = 'playing';
     this.meta.answers = drawAnswers(this.meta.seed, this.meta.round, cfg.boards);
     this.meta.deadline = Date.now() + cfg.roundMs;
@@ -381,7 +465,7 @@ export class Room implements DurableObject {
   }
 
   private async endRound(): Promise<void> {
-    const cfg = MODES[this.meta.mode];
+    const cfg = this.roundCfg();
     // Settle anyone the clock caught mid-round.
     for (const [ws, a] of this.cache) {
       if (a.round !== this.meta.round) continue;
@@ -423,7 +507,12 @@ export class Room implements DurableObject {
       const standings = this.order.slice(0, 50).map((s, i) => this.row(s, i + 1));
       for (const [ws, a] of this.cache) {
         this.send(ws, {
+          // The words ride here as well as in `roundEnd` because the phase is
+          // already 'finished' by now, and the client only reveals on
+          // 'intermission' — so the last round of every match, the one people
+          // actually talk about afterwards, never showed its answers.
           t: 'matchEnd', room: this.snapshot(), standings,
+          answers: [...this.meta.answers],
           you: { rank: this.ranks.get(a.id) ?? 0, score: a.score },
         });
       }
@@ -489,7 +578,7 @@ export class Room implements DurableObject {
     if (!this.dirty && !stale) return;
     this.recompute();
 
-    const cfg = MODES[this.meta.mode];
+    const cfg = this.roundCfg();
     const hist = new Array(cfg.maxGuesses).fill(0) as number[];
     let solved = 0;
     for (const a of this.cache.values()) {
@@ -584,6 +673,16 @@ export class Room implements DurableObject {
     rows.sort(compareStandings);
     this.order = rows;
     this.ranks = new Map(rows.map((r, i) => [r.id, i + 1]));
+
+    // 'lead' has been in the protocol since day one and was never emitted, even
+    // though order[0] is computed right here every tick. Scoreless leaders are
+    // skipped: at the first tick of a round the whole room is on zero and the
+    // "leader" is whoever won the id tiebreak, which is not news.
+    const lead = rows[0];
+    if (this.meta.phase === 'playing' && lead && lead.score > 0 && lead.id !== this.leaderId) {
+      this.leaderId = lead.id;
+      this.pushFeed(['lead', lead.name, lead.score]);
+    }
   }
 
   /**
@@ -624,16 +723,53 @@ export class Room implements DurableObject {
   /* ------------------------------------------------------------------ helpers */
 
   private snapshot(): RoomSnapshot {
+    const cfg = this.roundCfg();
     return {
       code: this.meta.code, mode: this.meta.mode, phase: this.meta.phase,
       round: this.meta.round, rounds: this.meta.rounds,
       online: this.cache.size, deadline: this.meta.deadline, hostId: this.meta.hostId,
+      cfg: { b: cfg.boards, g: cfg.maxGuesses, l: cfg.label },
     };
+  }
+
+  /**
+   * The config governing the round in progress — the single place this file
+   * asks what shape the game currently is.
+   *
+   * Board count, guess budget and clock all used to be read straight off
+   * MODES[mode] at half a dozen call sites. In MISTO all three change between
+   * rounds, so any site left reading the mode directly sizes a `solved` array,
+   * a histogram or a finish check for the wrong format, silently and only in
+   * that one mode. Route everything through here.
+   */
+  private roundCfg(): ModeConfig {
+    return roundConfig(this.meta.mode, this.meta.round);
+  }
+
+  /**
+   * Hands back the attachment already held for `id`, unregistering the socket
+   * that held it.
+   *
+   * The eviction is the point, not housekeeping. Until the old socket's close
+   * event lands the room holds the same player twice: `online` double-counts,
+   * recompute emits two Standings under one id — two leaderboard rows sharing a
+   * React key — and the player receives every frame twice.
+   */
+  private evictById(id: string, keep: WebSocket): Attached | undefined {
+    for (const [ws, a] of this.cache) {
+      if (a.id !== id) continue;
+      this.cache.delete(ws);
+      if (ws !== keep) {
+        try { ws.close(1000, 'reconectado'); } catch { /* already gone */ }
+      }
+      return a;
+    }
+    return undefined;
   }
 
   /** Recomputes a player's grid from their guesses — tiles are never stored. */
   private boardOf(a: Attached) {
-    const cfg = MODES[this.meta.mode];
+    const cfg = this.roundCfg();
     const reveal = this.meta.phase === 'playing' || this.meta.phase === 'intermission';
     const tiles: Tile[][][] = [];
     for (let b = 0; b < cfg.boards; b++) {
