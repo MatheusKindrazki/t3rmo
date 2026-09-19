@@ -760,7 +760,15 @@ export class Room implements DurableObject {
       if (a.id !== id) continue;
       this.cache.delete(ws);
       if (ws !== keep) {
-        try { ws.close(1000, 'reconectado'); } catch { /* already gone */ }
+        // 4001, not 1000. The evicted client has to be able to TELL this
+        // apart from a network drop, because its reaction must be the
+        // opposite: a dropped socket should reconnect, and a socket that was
+        // taken over must not. Two tabs of the same browser share a clientId
+        // through localStorage, so with an indistinguishable close they evict
+        // each other roughly once a second, forever — measured in production
+        // at 28 reconnects in 40 seconds, each one wiping the player's
+        // half-typed word.
+        try { ws.close(4001, 'takeover'); } catch { /* already gone */ }
       }
       return a;
     }

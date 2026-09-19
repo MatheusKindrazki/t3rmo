@@ -148,6 +148,12 @@ function reduce(s: State, a: Action): State {
         case 'state': {
           const boards = m.room.cfg.b;
           const b = m.board;
+          // Keep whatever is half-typed. `state` arrives on every (re)join, and
+          // blanking the draft there meant a two-second blip cost you the word
+          // you were in the middle of — the thing you least want to retype
+          // under a clock. It is only cleared when the ROUND changed, where it
+          // no longer belongs to anything.
+          const sameRound = s.room?.round === m.room.round && s.guesses.length === (b?.guesses.length ?? 0);
           return {
             ...s,
             room: m.room,
@@ -156,7 +162,8 @@ function reduce(s: State, a: Action): State {
             tiles: b?.tiles ?? Array.from({ length: boards }, () => []),
             solved: b?.solved ?? new Array(boards).fill(false),
             finished: b?.finished ?? false,
-            draft: [...EMPTY_DRAFT], cursor: 0,
+            draft: sameRound ? s.draft : [...EMPTY_DRAFT],
+            cursor: sameRound ? s.cursor : 0,
           };
         }
 
@@ -301,8 +308,11 @@ export default function App() {
       const { code } = (await res.json()) as { code: string };
       saveName(name);
       enter(code, name, true);
-      // The room is created in lobby; the host picks the format from here.
-      setTimeout(() => sock.current?.send({ t: 'config', mode, rounds }), 250);
+      // Queued, not timed. The socket buffers this until it is open and the
+      // join has gone out — a 250ms timer lost the host's chosen format every
+      // time the connection took longer than that, which over the real edge is
+      // often.
+      sock.current?.send({ t: 'config', mode, rounds });
     } catch (e) {
       setError(`não consegui abrir a sala: ${(e as Error).message}`);
     } finally {
@@ -614,9 +624,24 @@ export default function App() {
       {sheet === 'progress' && <Progress mode={st.room.mode} onClose={() => setSheet(null)} />}
 
       {st.toast && <div className="toast" data-tone="bad" key={st.toast.id} role="status">{st.toast.msg}</div>}
-      {conn !== 'open' && conn !== 'idle' && (
+      {conn !== 'open' && conn !== 'idle' && conn !== 'taken' && (
         <div className="toast" data-tone="bad" role="status">
           {conn === 'connecting' ? 'CONECTANDO…' : 'SEM CONEXÃO'}
+        </div>
+      )}
+      {conn === 'taken' && (
+        <div className="veil" role="alertdialog" aria-modal="true">
+          <div className="veil-box">
+            <div className="kicker">sala {st.room.code}</div>
+            <div className="vtitle">Você abriu esta sala<br />em outra aba</div>
+            <p className="hint" style={{ marginTop: 12, maxWidth: 360, marginInline: 'auto' }}>
+              Só uma aba por jogador — a outra continua jogando com a sua posição.
+              Pode trazer a partida de volta para cá.
+            </p>
+            <button className="btn" style={{ marginTop: 20 }} onClick={() => sock.current?.reclaim()}>
+              jogar aqui
+            </button>
+          </div>
         </div>
       )}
       {sheet2 && (

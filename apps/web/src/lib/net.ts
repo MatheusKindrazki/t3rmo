@@ -2,7 +2,10 @@ import { PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from '@arena
 
 type Listener = (msg: ServerMessage) => void;
 type StatusListener = (s: ConnStatus) => void;
-export type ConnStatus = 'idle' | 'connecting' | 'open' | 'closed';
+export type ConnStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'taken';
+
+/** The room closed us because the same player opened it somewhere else. */
+export const TAKEOVER_CODE = 4001;
 
 /**
  * Room socket.
@@ -25,6 +28,17 @@ export class RoomSocket {
   private closedByUs = false;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private seq = 0;
+  /**
+   * Messages queued before the socket opened.
+   *
+   * `send` is a silent no-op while the socket is CONNECTING, and the host's
+   * chosen format used to be fired on a 250ms timer after connect. Over the
+   * public internet to an edge that may be cold-starting a Durable Object,
+   * 250ms is frequently not enough — so the room quietly stayed on the server
+   * defaults and the host discovered it when round one dealt the wrong game.
+   * Queueing removes the race instead of widening the timer.
+   */
+  private pending: ClientMessage[] = [];
 
   /** serverNow ≈ Date.now() + offset */
   offset = 0;
@@ -74,6 +88,10 @@ export class RoomSocket {
       this.attempt = 0;
       this.setStatus('open');
       this.send({ t: 'join', name: this.name, clientId: this.clientId, v: PROTOCOL_VERSION });
+      // Drain after join, never before: the room has to know who we are first.
+      const queued = this.pending;
+      this.pending = [];
+      for (const m of queued) this.send(m);
       this.send({ t: 'ping', ts: Date.now() });
       this.pingTimer = setInterval(() => this.send({ t: 'ping', ts: Date.now() }), 15_000);
     };
@@ -91,8 +109,18 @@ export class RoomSocket {
       for (const fn of this.listeners) fn(msg);
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
+
+      // A takeover is not a failure to recover from — reconnecting is exactly
+      // the wrong move. The other tab would then be evicted, reconnect in
+      // turn, and the two would trade the room forever.
+      if (ev.code === TAKEOVER_CODE) {
+        this.closedByUs = true;
+        this.setStatus('taken');
+        return;
+      }
+
       this.setStatus('closed');
       if (this.closedByUs) return;
       const wait = Math.min(8000, 400 * 2 ** this.attempt++) + Math.random() * 250;
@@ -102,6 +130,13 @@ export class RoomSocket {
     ws.onerror = () => ws.close();
   }
 
+  /** Take the room back from whatever else claimed it. */
+  reclaim(): void {
+    this.closedByUs = false;
+    this.attempt = 0;
+    this.connect();
+  }
+
   close(): void {
     this.closedByUs = true;
     if (this.pingTimer) clearInterval(this.pingTimer);
@@ -109,7 +144,11 @@ export class RoomSocket {
   }
 
   send(msg: ClientMessage): void {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+    if (this.ws?.readyState === WebSocket.OPEN) { this.ws.send(JSON.stringify(msg)); return; }
+    // Anything that matters before the socket settles has to wait, not vanish.
+    // `guess` is deliberately excluded by the caller: a guess replayed after a
+    // reconnect would land in a round that has moved on.
+    if (msg.t === 'config' || msg.t === 'start') this.pending.push(msg);
   }
 
   guess(word: string): number {
