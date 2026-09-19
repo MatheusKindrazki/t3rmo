@@ -38,6 +38,8 @@ const ROUNDS = Number(arg('rounds', 4));
 const RAMP = Number(arg('ramp', Math.max(8000, BOTS * 60)));
 const START_IN = Number(arg('start-in', 15));
 const START_AT = Number(arg('start-at', 0)); // inicia quando N sockets conectaram (medição)
+const IQ = arg('iq', 'bom');                 // nível dos bots: iniciante|casual|bom|pro|mix
+const TEMPO = Number(arg('tempo', 1));       // multiplicador do relógio (0.5 = rápido, 2 = longo)
 const WAIT = !flag('no-wait');
 
 const LOCAL = /^(127\.0\.0\.1|localhost|\[::1\])(:|$)/.test(HOST);
@@ -74,7 +76,7 @@ const main = async () => {
     setTimeout(() => fail(new Error('tempo esgotado abrindo o socket')), 15000);
   });
   send({ t: 'join', name: 'anfitriao', clientId: `arena-host-${Date.now()}`, v: 1 });
-  send({ t: 'config', mode: MODE, rounds: ROUNDS });
+  send({ t: 'config', mode: MODE, rounds: ROUNDS, pace: TEMPO });
   await sleep(1200);
 
   const conf = await info(code);
@@ -83,7 +85,7 @@ const main = async () => {
   say(`  ${C.b}${C.c}${HTTP}://${HOST}/?sala=${code}${C.r}`);
   say('');
   say(`  ${C.dim}modo${C.r} ${conf?.mode ?? MODE}   ${C.dim}rodadas${C.r} ${conf?.rounds ?? ROUNDS}   ` +
-      `${C.dim}1ª${C.r} ${cfg?.l ?? '?'} (${cfg?.b ?? '?'} palavra(s), ${cfg?.g ?? '?'} tentativas)   ${C.dim}bots${C.r} ${BOTS}`);
+      `${C.dim}1ª${C.r} ${cfg?.l ?? '?'} (${cfg?.b ?? '?'} palavra(s), ${cfg?.g ?? '?'} tentativas)   ${C.dim}bots${C.r} ${BOTS}   ${C.dim}iq${C.r} ${IQ}   ${C.dim}tempo${C.r} ${TEMPO}x`);
   if (conf && conf.mode !== MODE) {
     say(`  ${C.y}atenção: pedi ${MODE} e a sala ficou ${conf.mode}${C.r}`);
   }
@@ -104,7 +106,7 @@ const main = async () => {
   const fleet = spawn(process.execPath, [
     join(here, 'loadtest.mjs'),
     '--n', String(BOTS), '--host', HOST, '--code', code,
-    '--mode', MODE, '--rounds', String(ROUNDS), '--ramp', String(RAMP),
+    '--mode', MODE, '--rounds', String(ROUNDS), '--ramp', String(RAMP), '--iq', IQ,
   ], { stdio: 'inherit' });
 
   // The host starts the match. With --start-at N it waits until N sockets are

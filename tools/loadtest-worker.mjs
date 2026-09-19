@@ -18,6 +18,59 @@ import { loadPool, evaluate, sameTiles, Hist } from './loadtest-shared.mjs';
 const POOL = loadPool();
 
 /**
+ * Bot skill. The default fleet solves in 2-4 like an expert, which is great for
+ * a load test but reads as inhuman in a demo room. A level tunes four dials:
+ *   mistake — chance a guess ignores the deduced candidates (a wild word), which
+ *             both wastes an attempt and dents the solve rate, like a real player
+ *             who stops reasoning;
+ *   think   — how long before submitting (base + random), so weaker players are
+ *             visibly slower on the clock;
+ *   quit    — per-guess chance of walking away mid-round (AFK / rage-quit);
+ *   optimal — chance of playing an information-maximising guess instead of a
+ *             random consistent one, which closes faster (the "pro").
+ */
+const SKILLS = {
+  iniciante: { mistake: 0.40, thinkBase: 1800, thinkRand: 3800, quit: 0.020, optimal: 0    },
+  casual:    { mistake: 0.20, thinkBase: 1200, thinkRand: 3000, quit: 0.006, optimal: 0    },
+  bom:       { mistake: 0.05, thinkBase: 800,  thinkRand: 2400, quit: 0,     optimal: 0    },
+  pro:       { mistake: 0,    thinkBase: 450,  thinkRand: 1300, quit: 0,     optimal: 0.85 },
+};
+
+/** Pick a level for bot `i`. `mix` spreads a realistic crowd across the fleet. */
+function skillFor(iq, i) {
+  if (iq && iq !== 'mix') return SKILLS[iq] || SKILLS.bom;
+  // A cheap deterministic hash so a mix is evenly interleaved, not clustered.
+  const r = ((i * 2654435761) >>> 0) % 100;
+  if (r < 15) return SKILLS.iniciante;
+  if (r < 55) return SKILLS.casual;
+  if (r < 88) return SKILLS.bom;
+  return SKILLS.pro;
+}
+
+/**
+ * The guess that splits the remaining candidates hardest: among a small sample
+ * it maximises distinct feedback patterns, so it eliminates the most on average.
+ * Sampled and capped because this runs per guess per bot across the whole fleet.
+ */
+function bestSplit(cands) {
+  const guesses = cands.length > 24 ? sample(cands, 24) : cands;
+  const answers = cands.length > 24 ? sample(cands, 24) : cands;
+  let best = guesses[0], bestScore = -1;
+  for (const g of guesses) {
+    const seen = new Set();
+    for (const ans of answers) seen.add(evaluate(g, ans).join(''));
+    if (seen.size > bestScore) { bestScore = seen.size; best = g; }
+  }
+  return best;
+}
+
+function sample(arr, k) {
+  const out = [];
+  for (let j = 0; j < k; j++) out.push(arr[(Math.random() * arr.length) | 0]);
+  return out;
+}
+
+/**
  * Event-loop lag, which is the whole point of splitting processes: it is the
  * number that says "the client is now inventing the latency it is reporting".
  * Resolution 10 has a ~10 ms floor on an idle loop (measured), which would
@@ -70,6 +123,7 @@ class Bot {
     this.sampled = cfg.sampleEvery > 0 && i % cfg.sampleEvery === 0;
     this.prober = cfg.probeEvery > 0 && i % cfg.probeEvery === 0;
     this.gapTracked = this.sampled;
+    this.skill = skillFor(cfg.iq, i);
   }
 
   open() {
@@ -215,16 +269,27 @@ class Bot {
     }
   }
 
-  /** Human-ish pacing: nobody submits five words in one second. */
+  /** Human-ish pacing, graded by skill: nobody submits five words in one second. */
   think(extra = 0) {
     if (!this.playing) return;
-    const wait = extra + 900 + Math.random() * 2600;
+    const sk = this.skill;
+    const wait = extra + sk.thinkBase + Math.random() * sk.thinkRand;
     setTimeout(() => {
       if (!this.playing || !this.alive) return;
+      // Weaker players sometimes just leave mid-round.
+      if (sk.quit && Math.random() < sk.quit) { this.playing = false; return; }
       const open = [];
       for (let b = 0; b < this.boards; b++) if (!this.done[b] && this.cands[b]?.length) open.push(this.cands[b]);
       const from = open.length ? open[0] : POOL;
-      const word = from[(Math.random() * from.length) | 0];
+      let word;
+      if (sk.mistake && Math.random() < sk.mistake) {
+        // A wild guess that ignores the deductions so far — wastes the attempt.
+        word = POOL[(Math.random() * POOL.length) | 0];
+      } else if (sk.optimal && from.length > 2 && from.length <= 60 && Math.random() < sk.optimal) {
+        word = bestSplit(from);
+      } else {
+        word = from[(Math.random() * from.length) | 0];
+      }
       const seq = ++this.seq;
       this.pending.set(seq, nowMs());
       stats.guesses++;

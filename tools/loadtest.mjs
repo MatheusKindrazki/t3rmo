@@ -44,6 +44,7 @@ const HOST = arg('host', '127.0.0.1:8791');
 const MODE = arg('mode', 'termo');
 const ROUNDS = Number(arg('rounds', 1));
 const RAMP_MS = Number(arg('ramp', 8000));
+const IQ = arg('iq', 'bom'); // iniciante | casual | bom | pro | mix
 const CODE_IN = arg('code', '');
 const STATUS_FILE = arg('status', STATUS_PATH);
 const QUIET = flag('quiet');
@@ -157,7 +158,7 @@ async function main() {
     else console.log(`aviso: o servidor não conhece o modo "${MODE}" (conhece: ${(h.modes || []).map((m) => m.id).join(', ')})`);
   } catch { console.log('aviso: /api/health não respondeu; usando relógio de rodada conservador'); }
 
-  const modeLabel = CODE_IN ? 'definido pelo host (entrando numa sala existente)' : `${MODE} (boards ${boardsHint}) · ${ROUNDS} rodada(s)`;
+  const modeLabel = CODE_IN ? 'definido pelo host (entrando numa sala existente)' : `${MODE} (boards ${boardsHint}) · ${ROUNDS} rodada(s) · iq ${IQ}`;
   console.log(`sala ${code} · ${N} bots · modo ${modeLabel} · ${WORKERS} worker(s) · ramp ${RAMP_MS} ms`);
   console.log(`status ao vivo: node tools/fleetwatch.mjs${STATUS_FILE !== STATUS_PATH ? ` --status ${STATUS_FILE}` : ''}\n`);
 
@@ -198,6 +199,7 @@ async function main() {
         rampStart, rampMs: RAMP_MS, reportMs: REPORT_MS,
         // ~25 detailed tick samplers and ~40 ping probes, spread evenly over
         // the fleet instead of bunched in worker 0.
+        iq: IQ,
         sampleEvery: Math.max(1, Math.floor(N / 25)),
         probeEvery: Math.max(1, Math.floor(N / 40)),
       },
