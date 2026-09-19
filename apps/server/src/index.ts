@@ -3,9 +3,15 @@ import { MODE_IDS, MODES } from '@arena/core';
 
 export { Room };
 
+interface RateLimit {
+  limit(opts: { key: string }): Promise<{ success: boolean }>;
+}
+
 export interface Env {
   ROOM: DurableObjectNamespace;
   ASSETS: Fetcher;
+  /** Per-IP limiter for room creation; declared in wrangler.jsonc. */
+  CREATE_LIMIT: RateLimit;
 }
 
 /** Room codes a person can read out loud: no O/0, no I/1, no confusable pairs. */
@@ -42,6 +48,16 @@ export default {
 
     // Create: the code is minted here, the Durable Object is addressed by it.
     if (p === '/api/rooms' && req.method === 'POST') {
+      // Per-IP rate limit. Creation is unauthenticated and each call can
+      // materialise a Durable Object, so without this one script runs up the
+      // bill unbounded. CF-Connecting-IP is set by the edge; the ?? keeps a
+      // stray request without it from sharing an empty-string bucket with
+      // everyone else — it just gets its own.
+      const ip = req.headers.get('CF-Connecting-IP') ?? crypto.randomUUID();
+      const { success } = await env.CREATE_LIMIT.limit({ key: ip });
+      if (!success) {
+        return json({ error: 'muitas salas em pouco tempo — espere um minuto' }, 429);
+      }
       const code = newCode();
       return json({ code, ws: `/api/rooms/${code}/ws` }, 201);
     }

@@ -45,6 +45,28 @@ export const TOP_N = 12;
 /** Upper bound on a single leaderboard page request. */
 export const PAGE_MAX = 100;
 
+/**
+ * Hard ceiling on sockets in one room.
+ *
+ * A room is a single Durable Object, single-threaded, and the tick fan-out is
+ * O(players). An adversarial audit put the honest survivable number well below
+ * the round ten-thousand a streamer would aim a public code at, and — more to
+ * the point — Cloudflare publishes no per-DO WebSocket connection limit today,
+ * so an uncapped room fails in a way we do not control. A cap makes "sala
+ * cheia" the failure instead of "colapso desconhecido", and the number is ours
+ * to raise once the real edge has been measured past 400.
+ */
+export const ROOM_MAX = 3000;
+
+/** A socket that never sends `join` within this window is dropped. */
+export const JOIN_GRACE_MS = 10_000;
+
+/** Minimum spacing between two `page` requests from one socket. */
+export const PAGE_COOLDOWN_MS = 1_000;
+
+/** Above this many players the 30s autostart is off — a stream host is present by definition. */
+export const AUTOSTART_MAX_PLAYERS = 40;
+
 export type Phase = 'lobby' | 'countdown' | 'playing' | 'intermission' | 'finished';
 
 /* ------------------------------------------------------------------ client -> server */

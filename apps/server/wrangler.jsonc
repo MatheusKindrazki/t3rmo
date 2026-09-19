@@ -10,6 +10,13 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
   "observability": { "enabled": true },
+  // Native rate limiter, per-IP, for room creation. The Worker is stateless
+  // between requests, so this needs a binding rather than a variable — and an
+  // unauthenticated POST that materialises a Durable Object is exactly what a
+  // script would hammer to run up the bill.
+  "ratelimits": [
+    { "name": "CREATE_LIMIT", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } }
+  ],
   // Keeps a working URL that depends on no DNS at all, so the game is reachable
   // while the apex is sorted out and if a domain change ever breaks.
   "workers_dev": true,

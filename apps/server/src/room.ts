@@ -4,6 +4,7 @@ import {
   scoreRound, compareStandings, assertAttemptsDominate, type Standing,
   TICK_MS, tickMsFor, EXACT_RANK_LIMIT, CUT_RANKS, SPY_N,
   HEARTBEAT_MS, GUESS_COOLDOWN_MS, TOP_N, PAGE_MAX, PROTOCOL_VERSION,
+  ROOM_MAX, JOIN_GRACE_MS, PAGE_COOLDOWN_MS, AUTOSTART_MAX_PLAYERS,
   encodeTickShared, spliceMe,
   type ClientMessage, type ServerMessage, type Phase, type RoomSnapshot,
   type RowWire, type FeedWire,
@@ -58,6 +59,8 @@ interface Attached {
   /** Round index this attachment's round fields belong to. */
   round: number;
   lastGuessAt: number;
+  /** Last `page` request, for the page cooldown. */
+  lastPageAt: number;
 }
 
 interface Persisted {
@@ -121,8 +124,10 @@ export class Room implements DurableObject {
   private rehydrate(): void {
     this.cache.clear();
     for (const ws of this.state.getWebSockets()) {
-      const a = ws.deserializeAttachment() as Attached | null;
-      if (a) this.cache.set(ws, a);
+      const a = ws.deserializeAttachment() as (Attached | { acceptedAt: number }) | null;
+      // A socket that connected but never sent `join` carries only {acceptedAt}
+      // and is not a player — loading it as one would seat a ghost with no id.
+      if (a && 'id' in a) this.cache.set(ws, a);
     }
     this.dirty = true;
   }
@@ -172,10 +177,29 @@ export class Room implements DurableObject {
       await this.save();
     }
 
+    // Count SOCKETS, not joined players. The cap has to bind before we accept,
+    // and it has to count the raw connections the object is holding — a
+    // flooder that opens thousands and never sends `join` would slip a
+    // players-only cap entirely. getWebSockets() is the truth the runtime keeps.
+    if (this.state.getWebSockets().length >= ROOM_MAX) {
+      return new Response('sala cheia', {
+        status: 503,
+        headers: { 'Retry-After': '15' },
+      });
+    }
+
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     // Hibernation-aware accept: the room can sleep with these still open.
+    // The accept time is stamped so a socket that connects and never joins —
+    // the cheap half of a flood — can be swept (see webSocketMessage/alarm).
     this.state.acceptWebSocket(server);
+    server.serializeAttachment({ acceptedAt: Date.now() });
+    // A raw socket triggers none of the message handlers, so nothing else would
+    // ever schedule the sweep that removes it if it never joins. Do it here.
+    // In lobby this arms the JOIN_GRACE heartbeat; once a match is running the
+    // tick alarm is already doing the rounds, so this no-ops.
+    await this.maybeScheduleAlarm();
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -195,6 +219,16 @@ export class Room implements DurableObject {
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
+    // A throw in any of the runtime handlers below is the leading suspect for
+    // the 1006 that dropped every socket at once: an uncaught error in a
+    // hibernation handler can tear the object down. Each one is wrapped so a
+    // single bad frame or a storage hiccup costs one socket, not the room. The
+    // log line turns the next reproduction into a name.
+    try { await this.onClose(ws); }
+    catch (err) { console.error('webSocketClose', this.cache.size, err); }
+  }
+
+  private async onClose(ws: WebSocket): Promise<void> {
     const gone = this.cache.get(ws);
     this.cache.delete(ws);
     this.dirty = true;
@@ -221,8 +255,10 @@ export class Room implements DurableObject {
   }
 
   async webSocketError(ws: WebSocket): Promise<void> {
-    this.cache.delete(ws);
-    this.dirty = true;
+    try {
+      this.cache.delete(ws);
+      this.dirty = true;
+    } catch (err) { console.error('webSocketError', this.cache.size, err); }
   }
 
   /* ------------------------------------------------------------------ messages */
@@ -275,7 +311,7 @@ export class Room implements DurableObject {
     const a: Attached = prior ?? {
       id, name, guesses: [], solved: new Array(cfg.boards).fill(false),
       score: 0, roundScore: 0, streak: 0, totalGuesses: 0,
-      timeMs: 0, totalTimeMs: 0, round: this.meta.round, lastGuessAt: 0,
+      timeMs: 0, totalTimeMs: 0, round: this.meta.round, lastGuessAt: 0, lastPageAt: 0,
     };
     if (prior && prior.round !== this.meta.round) {
       // Back after a round boundary. Match totals — score, streak, totalGuesses,
@@ -418,13 +454,25 @@ export class Room implements DurableObject {
   }
 
   private onPage(ws: WebSocket, msg: Extract<ClientMessage, { t: 'page' }>): void {
+    const me = this.cache.get(ws);
+    if (!me) return;
+
+    // Rate-limited, and NEVER a recompute. `page` is a 30-byte message that no
+    // legit client even sends today, and calling recompute() here let one
+    // socket force a full sort of the whole room ~1000×/s — a single-thread
+    // freeze for everyone. The page is served from the last tick's `order`,
+    // for exactly the reason onGuess does not sort either: the number is at
+    // most one tick old, which is as old as the table on the player's screen.
+    const now = Date.now();
+    if (now - me.lastPageAt < PAGE_COOLDOWN_MS) return;
+    me.lastPageAt = now;
+    this.attach(ws, me);
+
     const from = Math.max(0, Math.min(10_000, Math.floor(msg.from) || 0));
     const to = Math.max(from + 1, Math.min(from + PAGE_MAX, Math.floor(msg.to) || from + 20));
-    const me = this.cache.get(ws);
-    this.recompute();
     this.send(ws, {
       t: 'page', from, total: this.order.length,
-      rows: this.order.slice(from, to).map((s, i) => this.row(s, from + i + 1, me?.id)),
+      rows: this.order.slice(from, to).map((s, i) => this.row(s, from + i + 1, me.id)),
     });
   }
 
@@ -538,6 +586,19 @@ export class Room implements DurableObject {
   }
 
   async alarm(): Promise<void> {
+    try { await this.onAlarm(); }
+    catch (err) {
+      console.error('alarm', this.meta.phase, this.cache.size, err);
+      // Never leave the room without a future alarm because one tick threw —
+      // that is how a live match would silently stop ticking for everyone.
+      try {
+        const next = this.meta.phase === 'playing' ? Date.now() + tickMsFor(this.cache.size) : this.meta.deadline;
+        if (next > 0) await this.state.storage.setAlarm(next);
+      } catch { /* storage itself is unwell; nothing safe left to do */ }
+    }
+  }
+
+  private async onAlarm(): Promise<void> {
     const now = Date.now();
     switch (this.meta.phase) {
       case 'countdown':
@@ -551,9 +612,19 @@ export class Room implements DurableObject {
         if (now >= this.meta.deadline) return void (await this.startCountdown());
         return void (await this.state.storage.setAlarm(this.meta.deadline));
       case 'lobby':
-        if (this.meta.quorumAt && now - this.meta.quorumAt >= AUTOSTART_MS && this.cache.size >= 2) {
+        // Autostart is for a friends' room whose host wandered off, not for a
+        // stream: above a few dozen players the host is present by definition,
+        // and firing the match 30s after the SECOND arrival would start it
+        // long before the audience finished joining.
+        if (
+          this.meta.quorumAt &&
+          now - this.meta.quorumAt >= AUTOSTART_MS &&
+          this.cache.size >= 2 &&
+          this.cache.size <= AUTOSTART_MAX_PLAYERS
+        ) {
           return void (await this.beginMatch());
         }
+        this.sweepUnjoined();
         return void (await this.maybeScheduleAlarm());
       default:
         return;
@@ -564,8 +635,18 @@ export class Room implements DurableObject {
     if (this.meta.phase !== 'lobby') return;
     const pending = await this.state.storage.getAlarm();
     if (pending !== null) return;
+    // Two reasons to hold a lobby alarm: an autostart is due, or there are more
+    // raw sockets than seated players — zombies to sweep. Without the second,
+    // a flood of connect-and-never-join sockets in a room with fewer than two
+    // real players would never be swept, because nothing would wake the object.
+    const zombies = this.state.getWebSockets().length > this.cache.size;
     if (this.meta.quorumAt && this.cache.size >= 2) {
       await this.state.storage.setAlarm(this.meta.quorumAt + AUTOSTART_MS);
+    } else if (zombies) {
+      // A margin past the grace window, not exactly on it: a socket accepted at
+      // t is swept when the alarm fires strictly after t + JOIN_GRACE_MS, and
+      // scheduling at exactly +grace lands on the boundary and misses.
+      await this.state.storage.setAlarm(Date.now() + JOIN_GRACE_MS + 1_500);
     }
   }
 
@@ -720,8 +801,21 @@ export class Room implements DurableObject {
   }
 
   private broadcastState(): void {
+    // Serialize the shared half ONCE, splice each player's board on. The old
+    // version did a JSON.stringify per socket, so a single host flap in a big
+    // room fired ten thousand of them on the main thread. The `room` snapshot
+    // is identical for everyone; only `board` differs, and every board is
+    // stringified on its own and inserted, so the shared object is built once.
+    const now = Date.now();
+    const shared = JSON.stringify({ t: 'state', room: this.snapshot(), now });
+    // `shared` ends in `}`; reopen it to append the personal board.
+    const head = shared.slice(0, -1);
     for (const [ws, a] of this.cache) {
-      this.send(ws, { t: 'state', room: this.snapshot(), board: this.boardOf(a), now: Date.now() });
+      try {
+        ws.send(`${head},"board":${JSON.stringify(this.boardOf(a))}}`);
+      } catch {
+        this.cache.delete(ws);
+      }
     }
   }
 
@@ -815,6 +909,27 @@ export class Room implements DurableObject {
     if (this.cache.size === 0) return false;
     for (const a of this.cache.values()) if (!this.isFinished(a, cfg)) return false;
     return true;
+  }
+
+  /**
+   * Drop sockets that connected and never sent `join`.
+   *
+   * Opening a socket is the cheap half of a flood — it costs the attacker
+   * almost nothing and holds a slot against ROOM_MAX. A real client sends
+   * `join` within a round trip; anything still only carrying {acceptedAt}
+   * after the grace window is either a flooder or a dead tab, and either way
+   * it should not hold a seat. Called from the lobby alarm and after joins.
+   */
+  private sweepUnjoined(): void {
+    const now = Date.now();
+    for (const ws of this.state.getWebSockets()) {
+      if (this.cache.has(ws)) continue; // a real player
+      const a = ws.deserializeAttachment() as { acceptedAt?: number } | null;
+      const since = a?.acceptedAt ?? 0;
+      if (since && now - since > JOIN_GRACE_MS) {
+        try { ws.close(4003, 'sem join'); } catch { /* já foi */ }
+      }
+    }
   }
 
   private hasPlayer(id: string): boolean {
