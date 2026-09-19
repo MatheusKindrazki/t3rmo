@@ -44,9 +44,11 @@ function Spy({ spy, top, maxGuesses, mineId }: { spy: [string, string][]; top: R
 }
 
 export function Leaderboard({
-  top, spy, maxGuesses, me, myName, myId, total, approx,
+  top, neighbors = [], spy, maxGuesses, me, myName, myId, total, approx,
 }: {
   top: RowWire[];
+  /** The slice around the player, shown when they sit below the streamed top. */
+  neighbors?: RowWire[];
   spy: [string, string][];
   maxGuesses: number;
   me: [number, number, number] | null;
@@ -78,6 +80,7 @@ export function Leaderboard({
   }, [top]);
 
   const youInTop = top.some(isYou);
+  const youInNear = neighbors.some(isYou);
 
   return (
     <aside className="rail rail-r">
@@ -106,11 +109,34 @@ export function Leaderboard({
             </div>
           ))}
         </div>
+
+        {/* The players immediately around you — the top 12 tell someone in 250th
+            nothing, but the three rungs above them are the whole game. Pulled on
+            demand and shown right under the top, in the space it would otherwise
+            leave empty. */}
+        {neighbors.length > 0 && !youInTop && (
+          <div className="lb-near">
+            <div className="lb-gap" aria-hidden>⋯</div>
+            {neighbors.map(([rank, id, name, score, guesses, , you]) => (
+              <div
+                key={id}
+                className="lb-r lb-r-flow"
+                data-you={isYou([rank, id, name, score, guesses, 0, you])}
+              >
+                <span className="lb-k">{rank}</span>
+                <span className="lb-nm">{name}</span>
+                <span className="lb-a">{guesses}t</span>
+                <span className="lb-s">{fmtInt(score)}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Pinned even at #1.284: the number that matters most to a player is
-          always the one about them. */}
-      {me && !youInTop && (
+          always the one about them. Falls back here until the neighbour slice
+          arrives (or when the room is small enough that there is none). */}
+      {me && !youInTop && !youInNear && (
         <>
           <div className="lb-pin">
             <span className="lb-k">{me[0] > 0 ? `${approx ? '~' : ''}${me[0]}` : '—'}</span>

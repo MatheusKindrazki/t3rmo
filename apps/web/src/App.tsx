@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
   type Mode, type Tile, type RowWire, type FeedWire,
-  type RoomSnapshot, type ServerMessage, WORD_LENGTH,
+  type RoomSnapshot, type ServerMessage, WORD_LENGTH, TOP_N,
 } from '@arena/core';
 import { RoomSocket, loadClientId, loadName, saveName, type ConnStatus } from './lib/net.ts';
 import { keyStates, tilePx, rankFromCuts } from './lib/game.ts';
@@ -59,6 +59,8 @@ interface State {
   exactRank: boolean;
   /** Rank before the last change, for the movement arrow. */
   prevRank: number;
+  /** The players immediately around you, pulled on demand when you are past the top. */
+  neighbors: RowWire[];
   roundEnd: RoundEnd | null;
   matchEnd: { standings: RowWire[]; you: { rank: number; score: number } | null; answers: string[] } | null;
   toast: { msg: string; id: number } | null;
@@ -68,7 +70,7 @@ const EMPTY: State = {
   you: null, room: null, guesses: [], tiles: [], solved: [], finished: false,
   draft: ['', '', '', '', ''], cursor: 0, shakeKey: 0, shakeAt: -1,
   top: [], hist: [], online: 0, solvedCount: 0, feed: [],
-  me: null, spy: [], cuts: [], exactRank: false, prevRank: 0, roundEnd: null, matchEnd: null, toast: null,
+  me: null, spy: [], cuts: [], exactRank: false, prevRank: 0, neighbors: [], roundEnd: null, matchEnd: null, toast: null,
 };
 
 type Action =
@@ -238,6 +240,7 @@ function reduce(s: State, a: Action): State {
             ...s,
             room: m.room,
             roundEnd: { answers: m.answers, you: m.you, podium: m.podium, round: m.room.round, rounds: m.room.rounds },
+            neighbors: [],
           };
 
         case 'matchEnd':
@@ -255,7 +258,9 @@ function reduce(s: State, a: Action): State {
           };
 
         case 'page':
-          return s;
+          // The slice of the ladder around the player, filling the gap between the
+          // top and their own far-off row.
+          return { ...s, neighbors: m.rows };
 
         case 'error':
           return { ...s, toast: { msg: m.message, id: Date.now() } };
@@ -510,6 +515,26 @@ export default function App() {
   const approx = st.cuts.length > 0 && !exact;
   const myRank = approx && st.me ? rankFromCuts(st.me[1], st.cuts, st.online) : (st.me?.[0] ?? 0);
 
+  // Pull the players around you while you sit below the streamed top rows. The
+  // top 12 mean nothing to someone in 250th; who is one rung above you does.
+  // The server serves this from the last tick's order (cheap, rate-limited), so
+  // a slow poll is plenty. Rank is read from a ref so a rank that ticks every
+  // frame does not tear the interval down and up.
+  const rankRef = useRef(myRank);
+  rankRef.current = myRank;
+  const playing = st.room?.phase === 'playing';
+  useEffect(() => {
+    if (!playing) return;
+    const ask = () => {
+      const r = rankRef.current;
+      if (r <= TOP_N) return; // already visible in the streamed top rows
+      sock.current?.send({ t: 'page', from: Math.max(TOP_N, r - 5), to: r + 4 });
+    };
+    ask();
+    const iv = setInterval(ask, 1600);
+    return () => clearInterval(iv);
+  }, [playing]);
+
   if (!st.room || !cfg) {
     return (
       <>
@@ -608,6 +633,7 @@ export default function App() {
 
         <Leaderboard
           top={st.top}
+          neighbors={myRank > TOP_N ? st.neighbors : []}
           spy={st.spy}
           maxGuesses={cfg.maxGuesses}
           me={st.me ? [myRank, st.me[1], st.me[2]] : null}

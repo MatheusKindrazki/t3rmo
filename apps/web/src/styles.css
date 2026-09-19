@@ -1182,3 +1182,12 @@ html:not([data-marks='on']) .ex-t[data-state]::after { display: none; }
 
 /* two stacked sliders (rounds + tempo) need a breath between them */
 .lp-tempo { margin-top: 14px; }
+
+/* Neighbourhood slice — the players around you, below the streamed top. */
+.lb-near { display: flex; flex-direction: column; }
+.lb-gap {
+  text-align: center; color: var(--mute); letter-spacing: 2px;
+  padding: 2px 0 6px; font-size: 16px; line-height: 1;
+}
+/* The top list is absolutely positioned; these rows sit in normal flow. */
+.lb-r.lb-r-flow { position: relative; transform: none !important; }
