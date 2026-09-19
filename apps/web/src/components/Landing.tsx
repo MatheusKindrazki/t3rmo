@@ -1,6 +1,15 @@
 import { useState } from 'react';
-import { MODES, MODE_IDS, type Mode } from '@arena/core';
+import { MODES, MODE_IDS, roundConfig, PACE_MIN, PACE_MAX, type Mode } from '@arena/core';
 import { fmtClock } from '../lib/game.ts';
+
+/** A word for the tempo slider, so the number is not the only cue. */
+function paceWord(p: number): string {
+  if (p <= 0.7) return 'relâmpago';
+  if (p <= 0.9) return 'rápido';
+  if (p < 1.2) return 'normal';
+  if (p <= 1.5) return 'tranquilo';
+  return 'maratona';
+}
 import { Crowd } from './Crowd.tsx';
 
 /** T3RMO is five characters — exactly one Termo row. The mark IS the game. */
@@ -45,7 +54,7 @@ export function Landing({
 }: {
   name: string;
   setName: (n: string) => void;
-  onCreate: (mode: Mode, rounds: number) => void;
+  onCreate: (mode: Mode, rounds: number, pace: number) => void;
   onJoin: (code: string) => void | Promise<void>;
   busy: boolean;
   error: string | null;
@@ -54,6 +63,7 @@ export function Landing({
 }) {
   const [mode, setMode] = useState<Mode>('termo');
   const [rounds, setRounds] = useState(5);
+  const [pace, setPace] = useState(1);
   const [code, setCode] = useState('');
   const cfg = MODES[mode];
 
@@ -104,11 +114,25 @@ export function Landing({
               <span className="lp-meta">
                 {mode === 'misto'
                   ? `${rounds} rodada${rounds > 1 ? 's' : ''} · a escada recomeça a cada 4`
-                  : `${cfg.maxGuesses} tentativas · ${fmtClock(cfg.roundMs)} por rodada`}
+                  : `${cfg.maxGuesses} tentativas por rodada`}
               </span>
             </div>
 
-            <button className="btn lp-cta" disabled={busy} onClick={() => onCreate(mode, rounds)}>
+            <div className="lp-rounds lp-tempo">
+              <label className="label" htmlFor="pace">tempo <b>{paceWord(pace)}</b></label>
+              <input
+                id="pace" className="slider" type="range" min={PACE_MIN} max={PACE_MAX} step={0.1} value={pace}
+                onChange={(e) => setPace(Number(e.target.value))}
+                style={{ ['--fill' as string]: `${((pace - PACE_MIN) / (PACE_MAX - PACE_MIN)) * 100}%` }}
+              />
+              <span className="lp-meta">
+                {mode === 'misto'
+                  ? `escada ${fmtClock(roundConfig('misto', 1, pace).roundMs)} → ${fmtClock(roundConfig('misto', 4, pace).roundMs)}`
+                  : `${fmtClock(roundConfig(mode, 1, pace).roundMs)} no relógio`}
+              </span>
+            </div>
+
+            <button className="btn lp-cta" disabled={busy} onClick={() => onCreate(mode, rounds, pace)}>
               {busy ? 'abrindo…' : 'abrir sala'}
             </button>
 

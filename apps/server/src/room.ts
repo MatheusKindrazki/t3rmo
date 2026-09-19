@@ -5,6 +5,7 @@ import {
   TICK_MS, tickMsFor, EXACT_RANK_LIMIT, CUT_RANKS, SPY_N,
   HEARTBEAT_MS, GUESS_COOLDOWN_MS, TOP_N, PAGE_MAX, PROTOCOL_VERSION,
   ROOM_MAX, JOIN_GRACE_MS, PAGE_COOLDOWN_MS, AUTOSTART_MAX_PLAYERS, LIMBO_MS, LIMBO_MAX,
+  PACE_MIN, PACE_MAX,
   encodeTickShared, spliceMe,
   type ClientMessage, type ServerMessage, type Phase, type RoomSnapshot,
   type RowWire, type FeedWire,
@@ -89,6 +90,8 @@ interface Persisted {
   created: boolean;
   /** Bumped when a match starts; scopes per-player recovery to one match. */
   matchId: number;
+  /** Host tempo: multiplier applied to every round clock. */
+  pace: number;
 }
 
 /** What actually comes back from storage: rooms predating `created` lack it. */
@@ -122,11 +125,11 @@ export class Room implements DurableObject {
         // A stored room without the flag is grandfathered in. Erring permissive
         // is deliberate: telling someone their real room does not exist is a
         // worse failure than one legacy typo'd room still resolving.
-        ? { ...stored, created: stored.created ?? true, matchId: stored.matchId ?? 0 }
+        ? { ...stored, created: stored.created ?? true, matchId: stored.matchId ?? 0, pace: stored.pace ?? 1 }
         : {
             code: 'SALA', seed: crypto.randomUUID(), mode: 'termo', phase: 'lobby',
             round: 0, rounds: DEFAULT_ROUNDS, deadline: 0, hostId: null, answers: [],
-            quorumAt: 0, created: false, matchId: 0,
+            quorumAt: 0, created: false, matchId: 0, pace: 1,
           };
       this.rehydrate();
       this.loaded = true;
@@ -496,6 +499,9 @@ export class Room implements DurableObject {
     }
     if (msg.mode && isMode(msg.mode)) this.meta.mode = msg.mode;
     if (typeof msg.rounds === 'number') this.meta.rounds = Math.max(1, Math.min(20, Math.round(msg.rounds)));
+    if (typeof msg.pace === 'number' && Number.isFinite(msg.pace)) {
+      this.meta.pace = Math.max(PACE_MIN, Math.min(PACE_MAX, msg.pace));
+    }
     await this.save();
     this.broadcastState();
   }
@@ -920,7 +926,7 @@ export class Room implements DurableObject {
    * that one mode. Route everything through here.
    */
   private roundCfg(): ModeConfig {
-    return roundConfig(this.meta.mode, this.meta.round);
+    return roundConfig(this.meta.mode, this.meta.round, this.meta.pace);
   }
 
   /**

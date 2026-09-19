@@ -40,6 +40,27 @@ test('accented answer is solved by the unaccented guess', () => {
   assert.equal(isSolved(evaluate('ACIDO', 'ÁCIDO')), true);
 });
 
+test('tempo scales the clock linearly and never breaks attempt-dominance', () => {
+  // The host's tempo multiplier scales roundMs and nothing else. pace=1 must be
+  // the exact same object shape; other paces scale the clock; and the scoring
+  // invariant has to survive every pace, since a wrong scale would let the clock
+  // outrank an attempt (the whole game's promise).
+  for (const id of MODE_IDS) {
+    assert.equal(roundConfig(id, 1, 1).roundMs, MODES[id].roundMs, `${id} pace=1 is identity`);
+  }
+  for (const pace of [0.5, 0.6, 1, 1.4, 2]) {
+    for (const round of [1, 2, 3, 4]) {
+      const base = roundConfig('misto', round);
+      const scaled = roundConfig('misto', round, pace);
+      assert.equal(scaled.roundMs, Math.round(base.roundMs * pace), `misto r${round} @${pace}`);
+      assert.equal(scaled.boards, base.boards, 'pace never touches the board count');
+      assert.equal(scaled.bounty, base.bounty, 'pace never touches the payout');
+      assertAttemptsDominate(scaled); // the invariant holds at every tempo
+    }
+    for (const id of MODE_IDS) assertAttemptsDominate(roundConfig(id, 1, pace));
+  }
+});
+
 test('fewer attempts always beats more attempts, in every playable config', () => {
   // ROUND_CONFIGS and not MODES: each MISTO rung governs real rounds under an
   // id that MODES maps to something else entirely.

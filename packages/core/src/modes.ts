@@ -72,10 +72,14 @@ export const MISTO_RUNGS: readonly ModeConfig[] = [
  * change under the room every round. `round` is 1-based; round 0 is the lobby,
  * which previews rung 1.
  */
-export function roundConfig(mode: Mode, round: number): ModeConfig {
-  if (mode !== 'misto') return MODES[mode];
-  const i = Math.max(0, Math.floor(round) - 1) % MISTO_RUNGS.length;
-  return MISTO_RUNGS[i]!;
+export function roundConfig(mode: Mode, round: number, pace = 1): ModeConfig {
+  const base = mode !== 'misto'
+    ? MODES[mode]
+    : MISTO_RUNGS[Math.max(0, Math.floor(round) - 1) % MISTO_RUNGS.length]!;
+  // The clock is the only field the host's tempo touches. Everything the
+  // scoring invariant depends on is a ratio of this clock, so a uniform scale
+  // leaves the invariant intact (proven in the tests).
+  return pace === 1 ? base : { ...base, roundMs: Math.round(base.roundMs * pace) };
 }
 
 /**

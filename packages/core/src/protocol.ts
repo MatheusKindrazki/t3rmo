@@ -68,6 +68,18 @@ export const PAGE_MAX = 100;
  */
 export const ROOM_MAX = 1500;
 
+/**
+ * Match tempo — a multiplier the host applies to every round clock. It scales
+ * the per-mode and per-MISTO-rung clocks uniformly, so the designed relative
+ * pacing (a DUETO gets more time than a TERMO; the MISTO ladder still climbs)
+ * survives. Scoring is untouched: the speed bonus is elapsed/roundMs, a ratio,
+ * and the attempt-dominance invariant compares an instant solve to a buzzer
+ * solve at the SAME clock — scaling both cancels.
+ */
+export const PACE_MIN = 0.5;
+export const PACE_MAX = 2;
+export const PACE_DEFAULT = 1;
+
 /** A socket that never sends `join` within this window is dropped. */
 export const JOIN_GRACE_MS = 10_000;
 
@@ -99,7 +111,7 @@ export type Phase = 'lobby' | 'countdown' | 'playing' | 'intermission' | 'finish
 export type ClientMessage =
   | { t: 'join'; name: string; clientId: string; v: number }
   | { t: 'guess'; word: string; seq: number }
-  | { t: 'config'; mode?: Mode; rounds?: number }
+  | { t: 'config'; mode?: Mode; rounds?: number; pace?: number }
   | { t: 'start' }
   | { t: 'page'; from: number; to: number }
   | { t: 'ping'; ts: number };

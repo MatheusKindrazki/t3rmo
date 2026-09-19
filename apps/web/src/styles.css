@@ -1179,3 +1179,6 @@ html:not([data-marks='on']) .ex-t[data-state]::after { display: none; }
      replaced it entirely. */
   .tab-r { display: none !important; }
 }
+
+/* two stacked sliders (rounds + tempo) need a breath between them */
+.lp-tempo { margin-top: 14px; }

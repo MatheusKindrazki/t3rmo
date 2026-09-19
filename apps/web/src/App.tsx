@@ -300,7 +300,7 @@ export default function App() {
     history.replaceState(null, '', url);
   }, []);
 
-  const create = useCallback(async (mode: Mode, rounds: number) => {
+  const create = useCallback(async (mode: Mode, rounds: number, pace: number) => {
     setBusy(true); setError(null);
     try {
       const res = await fetch('/api/rooms', { method: 'POST' });
@@ -312,7 +312,7 @@ export default function App() {
       // join has gone out — a 250ms timer lost the host's chosen format every
       // time the connection took longer than that, which over the real edge is
       // often.
-      sock.current?.send({ t: 'config', mode, rounds });
+      sock.current?.send({ t: 'config', mode, rounds, pace });
     } catch (e) {
       setError(`não consegui abrir a sala: ${(e as Error).message}`);
     } finally {
