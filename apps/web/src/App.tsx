@@ -640,6 +640,7 @@ export default function App() {
               online={st.online}
               isHost={isHost}
               code={st.room.code}
+              feed={st.feed}
               onStart={() => sock.current?.send({ t: 'start' })}
             />
           )}

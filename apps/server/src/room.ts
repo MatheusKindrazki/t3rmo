@@ -696,6 +696,11 @@ export class Room implements DurableObject {
         ) {
           return void (await this.beginMatch());
         }
+        // A waiting lobby is not a dead screen: flush the arrivals that piled up
+        // since the last tick so the count climbs and names appear. Coalesced
+        // (one send per socket per tick, not per join) so a 1000-person rush is
+        // still linear, never the O(n^2) of broadcasting on every arrival.
+        if (this.dirty) this.broadcastLobby();
         this.sweepUnjoined();
         this.sweepLimbo();
         return void (await this.maybeScheduleAlarm());
@@ -707,19 +712,34 @@ export class Room implements DurableObject {
   private async maybeScheduleAlarm(): Promise<void> {
     if (this.meta.phase !== 'lobby') return;
     const pending = await this.state.storage.getAlarm();
-    if (pending !== null) return;
     // Two reasons to hold a lobby alarm: an autostart is due, or there are more
     // raw sockets than seated players — zombies to sweep. Without the second,
     // a flood of connect-and-never-join sockets in a room with fewer than two
     // real players would never be swept, because nothing would wake the object.
+    const now = Date.now();
     const zombies = this.state.getWebSockets().length > this.cache.size;
-    if (this.meta.quorumAt && this.cache.size >= 2) {
-      await this.state.storage.setAlarm(this.meta.quorumAt + AUTOSTART_MS);
-    } else if (zombies) {
-      // A margin past the grace window, not exactly on it: a socket accepted at
-      // t is swept when the alarm fires strictly after t + JOIN_GRACE_MS, and
-      // scheduling at exactly +grace lands on the boundary and misses.
-      await this.state.storage.setAlarm(Date.now() + JOIN_GRACE_MS + 1_500);
+    const when: number[] = [];
+    // Autostart is only a small-room affair (a friends' lobby whose host left);
+    // above the cap the host starts it by hand.
+    if (this.meta.quorumAt && this.cache.size >= 2 && this.cache.size <= AUTOSTART_MAX_PLAYERS) {
+      when.push(this.meta.quorumAt + AUTOSTART_MS);
+    }
+    // A pending flush: arrivals to show. Coalesced at the tick cadence so a rush
+    // does not fan out per join — and taken as the SOONEST time, so a count that
+    // must climb is not held hostage by a 30s autostart timer above it.
+    if (this.dirty) when.push(now + Math.max(700, tickMsFor(this.cache.size)));
+    // A margin past the grace window, not exactly on it: a socket accepted at t
+    // is swept when the alarm fires strictly after t + JOIN_GRACE_MS, and
+    // scheduling at exactly +grace lands on the boundary and misses.
+    if (zombies) when.push(now + JOIN_GRACE_MS + 1_500);
+    if (!when.length) return;
+    // Move the alarm EARLIER when a flush is due sooner than what is already
+    // pending — a plain "return if one exists" froze the lobby count, because a
+    // 30s autostart alarm sat in front of every arrival's flush. Never push it
+    // later (that would delay autostart); the 50ms guard avoids churn.
+    const target = Math.min(...when);
+    if (pending === null || target < pending - 50) {
+      await this.state.storage.setAlarm(target);
     }
   }
 
@@ -871,6 +891,24 @@ export class Room implements DurableObject {
     this.feed.push(entry);
     if (this.feed.length > 8) this.feed.shift();
     this.dirty = true;
+  }
+
+  /**
+   * The lobby heartbeat: online count + the last few arrivals, one serialized
+   * frame sent to everyone. No per-socket board (there is none yet), so it is a
+   * single stringify and N sends. Reuses the `tick` shape the client already
+   * knows — empty top/hist, live `online`, and the join/leave feed.
+   */
+  private broadcastLobby(): void {
+    const frame = JSON.stringify({
+      t: 'tick', now: Date.now(), online: this.cache.size,
+      solved: 0, hist: [], top: [], feed: this.feed.slice(-6),
+    });
+    for (const [ws] of this.cache) {
+      try { ws.send(frame); } catch { this.cache.delete(ws); }
+    }
+    this.feed = [];
+    this.dirty = false;
   }
 
   private broadcastState(): void {

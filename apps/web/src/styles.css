@@ -1264,3 +1264,22 @@ html:not([data-marks='on']) .ex-t[data-state]::after { display: none; }
 }
 @keyframes wait-pulse { 0%,100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.15); } }
 @media (prefers-reduced-motion: reduce) { .wait-dot { animation: none; } }
+
+/* Lobby: a living count and a trickle of arrivals, so the wait reads as alive. */
+.lobby-count { display: flex; align-items: baseline; justify-content: center; gap: 10px; margin-top: 14px; }
+.lobby-dot {
+  align-self: center; width: 9px; height: 9px; border-radius: 50%; background: var(--right-txt);
+  animation: wait-pulse 1.2s ease-in-out infinite;
+}
+.lobby-n {
+  font-family: var(--f-game); font-weight: 700; font-size: 40px; line-height: 1; color: var(--chalk);
+  display: inline-block; animation: lobby-bump .34s var(--ease);
+}
+.lobby-lbl { font-size: 13px; color: var(--mute); letter-spacing: .04em; }
+@keyframes lobby-bump { 0% { transform: translateY(-3px) scale(1.12); color: var(--right-txt); } 100% { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .lobby-n { animation: none; } .lobby-dot { animation: none; } }
+
+.lobby-feed { margin-top: 14px; display: flex; flex-direction: column; gap: 3px; min-height: 20px; }
+.lobby-in { font-size: 12px; color: var(--mute); animation: lobby-in .35s var(--ease); }
+.lobby-in b { color: var(--chalk); font-weight: 600; }
+@keyframes lobby-in { from { opacity: 0; transform: translateY(-4px); } }
