@@ -3,6 +3,7 @@ import {
   type Mode, type Tile, type RowWire, type FeedWire,
   type RoomSnapshot, type ServerMessage, WORD_LENGTH, TOP_N,
 } from '@arena/core';
+import { RankFull } from './components/RankFull.tsx';
 import { RoomSocket, loadClientId, loadName, saveName, type ConnStatus } from './lib/net.ts';
 import { keyStates, tilePx, rankFromCuts } from './lib/game.ts';
 import { Landing } from './components/Landing.tsx';
@@ -59,8 +60,8 @@ interface State {
   exactRank: boolean;
   /** Rank before the last change, for the movement arrow. */
   prevRank: number;
-  /** The players immediately around you, pulled on demand when you are past the top. */
-  neighbors: RowWire[];
+  /** Ladder rows pulled on demand, keyed by rank — feeds both the neighbourhood and the full list. */
+  pageRows: Record<number, RowWire>;
   roundEnd: RoundEnd | null;
   matchEnd: { standings: RowWire[]; you: { rank: number; score: number } | null; answers: string[] } | null;
   toast: { msg: string; id: number } | null;
@@ -70,7 +71,7 @@ const EMPTY: State = {
   you: null, room: null, guesses: [], tiles: [], solved: [], finished: false,
   draft: ['', '', '', '', ''], cursor: 0, shakeKey: 0, shakeAt: -1,
   top: [], hist: [], online: 0, solvedCount: 0, feed: [],
-  me: null, spy: [], cuts: [], exactRank: false, prevRank: 0, neighbors: [], roundEnd: null, matchEnd: null, toast: null,
+  me: null, spy: [], cuts: [], exactRank: false, prevRank: 0, pageRows: {}, roundEnd: null, matchEnd: null, toast: null,
 };
 
 type Action =
@@ -232,6 +233,7 @@ function reduce(s: State, a: Action): State {
             // figure still arrives with every `result`, and between guesses the
             // ladder places the player.
             me: m.me ?? s.me,
+            pageRows: { ...s.pageRows, ...Object.fromEntries(m.top.map((r) => [r[0], r])) },
             room: s.room ? { ...s.room, online: m.online } : s.room,
           };
 
@@ -240,7 +242,7 @@ function reduce(s: State, a: Action): State {
             ...s,
             room: m.room,
             roundEnd: { answers: m.answers, you: m.you, podium: m.podium, round: m.room.round, rounds: m.room.rounds },
-            neighbors: [],
+            pageRows: {},
           };
 
         case 'matchEnd':
@@ -258,9 +260,9 @@ function reduce(s: State, a: Action): State {
           };
 
         case 'page':
-          // The slice of the ladder around the player, filling the gap between the
-          // top and their own far-off row.
-          return { ...s, neighbors: m.rows };
+          // Merge by rank so both the neighbourhood window and the full scroll read
+          // from one cache.
+          return { ...s, pageRows: { ...s.pageRows, ...Object.fromEntries(m.rows.map((r) => [r[0], r])) } };
 
         case 'error':
           return { ...s, toast: { msg: m.message, id: Date.now() } };
@@ -282,6 +284,7 @@ export default function App() {
   const [sheet2, setSheet2] = useState<null | 'rank' | 'pulse'>(null);
   const [sheet, setSheet] = useState<null | 'rules' | 'progress'>(null);
   const [leaving, setLeaving] = useState(false);
+  const [rankOpen, setRankOpen] = useState(false);
   const recorded = useRef({ round: -1, match: -1 });
   const [vh, setVh] = useState(() => (typeof window === 'undefined' ? 900 : window.innerHeight));
   const [vw, setVw] = useState(() => (typeof window === 'undefined' ? 1440 : window.innerWidth));
@@ -523,17 +526,31 @@ export default function App() {
   const rankRef = useRef(myRank);
   rankRef.current = myRank;
   const playing = st.room?.phase === 'playing';
+  const requestPage = useCallback((from: number, to: number) => {
+    sock.current?.send({ t: 'page', from, to });
+  }, []);
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || rankOpen) return; // the full view drives its own paging
     const ask = () => {
       const r = rankRef.current;
       if (r <= TOP_N) return; // already visible in the streamed top rows
-      sock.current?.send({ t: 'page', from: Math.max(TOP_N, r - 5), to: r + 4 });
+      requestPage(Math.max(TOP_N, r - 5), r + 4);
     };
     ask();
     const iv = setInterval(ask, 1600);
     return () => clearInterval(iv);
-  }, [playing]);
+  }, [playing, rankOpen, requestPage]);
+
+  // The neighbourhood is a window of the page cache around your rank.
+  const neighbors = useMemo(() => {
+    if (myRank <= TOP_N) return [] as RowWire[];
+    const out: RowWire[] = [];
+    for (let r = Math.max(TOP_N + 1, myRank - 4); r <= myRank + 4; r++) {
+      const row = st.pageRows[r];
+      if (row) out.push(row);
+    }
+    return out;
+  }, [st.pageRows, myRank]);
 
   if (!st.room || !cfg) {
     return (
@@ -633,7 +650,7 @@ export default function App() {
 
         <Leaderboard
           top={st.top}
-          neighbors={myRank > TOP_N ? st.neighbors : []}
+          neighbors={neighbors}
           spy={st.spy}
           maxGuesses={cfg.maxGuesses}
           me={st.me ? [myRank, st.me[1], st.me[2]] : null}
@@ -641,7 +658,19 @@ export default function App() {
           myId={st.you?.id ?? ''}
           total={st.online}
           approx={approx}
+          onOpenFull={() => setRankOpen(true)}
         />
+        {rankOpen && (
+          <RankFull
+            total={st.online}
+            rows={st.pageRows}
+            myRank={myRank}
+            myId={st.you?.id ?? ''}
+            cuts={st.cuts}
+            requestPage={requestPage}
+            onClose={() => setRankOpen(false)}
+          />
+        )}
       </div>
 
       {leaving && (

@@ -44,7 +44,7 @@ function Spy({ spy, top, maxGuesses, mineId }: { spy: [string, string][]; top: R
 }
 
 export function Leaderboard({
-  top, neighbors = [], spy, maxGuesses, me, myName, myId, total, approx,
+  top, neighbors = [], spy, maxGuesses, me, myName, myId, total, approx, onOpenFull,
 }: {
   top: RowWire[];
   /** The slice around the player, shown when they sit below the streamed top. */
@@ -57,6 +57,8 @@ export function Leaderboard({
   myId: string;
   total: number;
   approx: boolean;
+  /** Opens the full, scrollable ranking. */
+  onOpenFull?: () => void;
 }) {
   // The broadcast frame is one string for the whole room, so "you" cannot be
   // marked server-side without marking it for everybody. The client matches the
@@ -86,7 +88,9 @@ export function Leaderboard({
     <aside className="rail rail-r">
       <div className="rail-hd">
         <span className="rail-t">Ranking</span>
-        <span className="rail-s">{total > 0 ? `${fmtInt(total)} na sala` : 'ao vivo'}</span>
+        {onOpenFull && total > top.length
+          ? <button className="rail-all" onClick={onOpenFull}>ver todos · {fmtInt(total)}</button>
+          : <span className="rail-s">{total > 0 ? `${fmtInt(total)} na sala` : 'ao vivo'}</span>}
       </div>
 
       <Spy spy={spy} top={top} maxGuesses={maxGuesses} mineId={mine} />
