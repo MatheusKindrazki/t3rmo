@@ -3,26 +3,29 @@ import type { ModeConfig } from './modes.ts';
 /**
  * Competitive scoring.
  *
- * The rule the room is sold on is "whoever wins in the fewest attempts goes to
- * the front". With a thousand players that rule alone produces enormous ties —
- * in TERMO the entire top of the table lands on 3 guesses — so the clock has to
- * break ties. The danger is the clock breaking more than ties.
+ * "Fewest attempts goes to the front" is the spine, but the clock is not just a
+ * tiebreaker any more — speed can lift you PAST people who spent one guess
+ * fewer. The bound that keeps that sane is structural, not a lucky number:
  *
- * So dominance is made STRUCTURAL rather than a numeric coincidence:
+ *     ATTEMPT_STEP  <  SPEED_MAX      (speed can cross ONE tier)
+ *     SPEED_MAX + STREAK_MAX  <  2 x ATTEMPT_STEP   (never two)
  *
- *     ATTEMPT_STEP  >  SPEED_MAX + STREAK_MAX
- *
- * One extra guess costs more than every tiebreaker in the game can hand back.
- * A player who solved in n guesses therefore cannot be passed, in that round,
- * by anyone who needed n+1 — no matter how fast they were or how hot a streak
- * they carried. `assertAttemptsDominate` proves it at module load, and the
- * first version of this file shipped with 280 < 450 and violated it silently.
+ * So a lightning solve at n+1 guesses can beat a crawling solve at n, but no
+ * amount of speed or streak lets an n+2 solve catch a buzzer-beating n. A
+ * perfect solve (the minimum guesses) keeps its bonus and so stays hard to
+ * pass. `assertScoringBounds` proves both halves at module load, over every
+ * playable config — the earlier model made attempts strictly dominant and this
+ * is the deliberate move away from it (the room owner asked for the blend).
  */
 export const WORD_POINTS = 1000;
 /** Points surrendered per guess beyond the theoretical minimum. */
 export const ATTEMPT_STEP = 600;
-/** Maximum the clock can contribute. Strictly below one attempt step. */
-export const SPEED_MAX = 250;
+/**
+ * Maximum the clock can contribute. ABOVE one attempt step on purpose, so a
+ * fast solve can cross a single attempt tier — but capped with STREAK_MAX below
+ * two steps so it can never cross two. See assertScoringBounds.
+ */
+export const SPEED_MAX = 700;
 /** Awarded only on a flawless round (no guess wasted). */
 export const PERFECT_BONUS = 250;
 export const STREAK_POINTS = 60;
@@ -87,27 +90,43 @@ export function scoreRound(perf: RoundPerformance, mode: ModeConfig): RoundScore
 }
 
 /**
- * Proves the headline promise for a mode: the worst imaginable round at k
- * guesses still outscores the best imaginable round at k+1 — slowest possible
- * clock and zero streak against instant solve on a maxed streak.
+ * Proves the two halves of the scoring bound for a config: speed may cross ONE
+ * attempt tier but never TWO. Concretely — a buzzer solve at k guesses, no
+ * streak, still outscores the most gilded solve (instant, full streak) two
+ * tiers worse; and, among imperfect solves, an instant solve one tier worse
+ * DOES overtake a crawling one, so the blend is not silently inert.
  *
  * Takes a config, not a mode id, because a MISTO rung is a config that no entry
  * of MODES is equal to. Run it over ROUND_CONFIGS.
  */
-export function assertAttemptsDominate(mode: ModeConfig): void {
-  for (let g = mode.boards; g < mode.maxGuesses; g++) {
-    const worstAtK = scoreRound(
-      { wordsSolved: mode.boards, guessesUsed: g, elapsedMs: mode.roundMs, streakBefore: 0 },
-      mode,
-    ).total;
-    const bestAtKPlus1 = scoreRound(
-      { wordsSolved: mode.boards, guessesUsed: g + 1, elapsedMs: 0, streakBefore: STREAK_CAP },
-      mode,
-    ).total;
-    if (worstAtK <= bestAtKPlus1) {
+export function assertScoringBounds(mode: ModeConfig): void {
+  const worst = (g: number) =>
+    scoreRound({ wordsSolved: mode.boards, guessesUsed: g, elapsedMs: mode.roundMs, streakBefore: 0 }, mode).total;
+  const best = (g: number) =>
+    scoreRound({ wordsSolved: mode.boards, guessesUsed: g, elapsedMs: 0, streakBefore: STREAK_CAP }, mode).total;
+
+  // Never two tiers: the slowest solve at g beats the best possible two worse.
+  for (let g = mode.boards; g + 2 <= mode.maxGuesses; g++) {
+    if (worst(g) <= best(g + 2)) {
       throw new Error(
-        `scoring invariant broken in ${mode.id}/${mode.label}: ${g} guesses at the buzzer with no streak ` +
-          `(${worstAtK}) does not beat ${g + 1} guesses instantly on a full streak (${bestAtKPlus1})`,
+        `scoring bound broken in ${mode.id}/${mode.label}: a buzzer solve at ${g} guesses with no streak ` +
+          `(${worst(g)}) is caught by an instant, full-streak solve two tiers worse at ${g + 2} (${best(g + 2)})`,
+      );
+    }
+  }
+
+  // Blend is live: among imperfect solves an instant solve one tier worse passes
+  // a crawling one. Starts one tier below perfect, which keeps its own bonus.
+  if (mode.boards + 2 <= mode.maxGuesses) {
+    const slow = worst(mode.boards + 1);
+    const fast = scoreRound(
+      { wordsSolved: mode.boards, guessesUsed: mode.boards + 2, elapsedMs: 0, streakBefore: 0 },
+      mode,
+    ).total;
+    if (fast <= slow) {
+      throw new Error(
+        `scoring blend inert in ${mode.id}/${mode.label}: a lightning solve at ${mode.boards + 2} guesses ` +
+          `(${fast}) cannot pass a crawling solve one tier better at ${mode.boards + 1} (${slow})`,
       );
     }
   }

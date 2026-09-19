@@ -1,7 +1,7 @@
 import {
   type Mode, type ModeConfig, isMode, WORD_LENGTH, roundConfig, ROUND_CONFIGS,
   evaluate, isSolved, normalize, type Tile,
-  scoreRound, compareStandings, assertAttemptsDominate, type Standing,
+  scoreRound, compareStandings, assertScoringBounds, type Standing,
   TICK_MS, tickMsFor, EXACT_RANK_LIMIT, CUT_RANKS, SPY_N,
   HEARTBEAT_MS, GUESS_COOLDOWN_MS, TOP_N, PAGE_MAX, PROTOCOL_VERSION,
   ROOM_MAX, JOIN_GRACE_MS, PAGE_COOLDOWN_MS, AUTOSTART_MAX_PLAYERS, LIMBO_MS, LIMBO_MAX,
@@ -15,7 +15,7 @@ import { isValidGuess, drawAnswers } from '@arena/core/dict';
 // Loud at isolate start rather than silently mis-ranking a live room. Over
 // ROUND_CONFIGS, not MODES: a MISTO rung governs real rounds and is not an
 // entry of MODES, so checking MODES alone would leave four formats unproven.
-for (const cfg of ROUND_CONFIGS) assertAttemptsDominate(cfg);
+for (const cfg of ROUND_CONFIGS) assertScoringBounds(cfg);
 
 const COUNTDOWN_MS = 5_000;
 const INTERMISSION_MS = 8_000;

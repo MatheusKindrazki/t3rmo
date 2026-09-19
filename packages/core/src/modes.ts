@@ -48,14 +48,13 @@ export const MODE_IDS: readonly Mode[] = ['termo', 'dueto', 'trieto', 'quarteto'
  * the bounty step of 250 is load-bearing — do not round it to something
  * prettier. The constraint is that escalation must not become a shortcut: the
  * sloppiest conceivable QUARTETO (all nine guesses, solved on the buzzer, streak
- * maxed = 1750 + 300) must still lose to a strong TERMO round (three guesses at
- * 30s of 150s = 2983). That caps the per-rung step below 561; 250 sits at 45% of
- * the ceiling, leaving room for the tuning nobody has done yet.
+ * maxed = 1750 + 300 = 2050) must still lose to a strong TERMO round (three
+ * guesses at 30s of 150s = 3312). Roomy: the rung could pay far more before that
+ * broke.
  *
- * The payoff is compression. Max round score runs 4800 / 5050 / 5300 / 5550 — a
- * 1.156:1 spread, against the 1.625:1 the single-format bounties produce. A
- * player who happens to be strongest at DUETO is not handed the match by the
- * schedule.
+ * The payoff is compression. Max round score runs 5250 / 5500 / 5750 / 6000 — a
+ * 1.14:1 spread, against the 1.57:1 the single-format bounties produce. A player
+ * who happens to be strongest at DUETO is not handed the match by the schedule.
  */
 export const MISTO_RUNGS: readonly ModeConfig[] = [
   { id: 'misto', label: 'TERMO',    boards: 1, maxGuesses: 6, bounty: 1000, roundMs:  90_000 },
@@ -76,14 +75,14 @@ export function roundConfig(mode: Mode, round: number, pace = 1): ModeConfig {
   const base = mode !== 'misto'
     ? MODES[mode]
     : MISTO_RUNGS[Math.max(0, Math.floor(round) - 1) % MISTO_RUNGS.length]!;
-  // The clock is the only field the host's tempo touches. Everything the
-  // scoring invariant depends on is a ratio of this clock, so a uniform scale
-  // leaves the invariant intact (proven in the tests).
+  // The clock is the only field the host's tempo touches. The scoring bounds
+  // depend only on ratios of this clock (speed is elapsed/roundMs), so a
+  // uniform scale leaves them intact (proven in the tests).
   return pace === 1 ? base : { ...base, roundMs: Math.round(base.roundMs * pace) };
 }
 
 /**
- * Every config that can ever govern a round. The scoring invariant has to be
+ * Every config that can ever govern a round. The scoring bounds have to be
  * proven over this list, not over MODES — a MISTO rung is a config no entry of
  * MODES is equal to.
  */

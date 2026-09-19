@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { evaluate, normalize, isSolved } from '../src/evaluate.ts';
 import { MODES, MODE_IDS, MISTO_RUNGS, ROUND_CONFIGS, roundConfig } from '../src/modes.ts';
 import {
-  scoreRound, compareStandings, assertAttemptsDominate, type Standing,
+  scoreRound, compareStandings, assertScoringBounds, type Standing,
   WORD_POINTS, ATTEMPT_STEP, SPEED_MAX, PERFECT_BONUS, STREAK_MAX,
 } from '../src/scoring.ts';
 import { isValidGuess, drawAnswers, ANSWERS } from '../src/dict.ts';
@@ -40,7 +40,7 @@ test('accented answer is solved by the unaccented guess', () => {
   assert.equal(isSolved(evaluate('ACIDO', 'ÁCIDO')), true);
 });
 
-test('tempo scales the clock linearly and never breaks attempt-dominance', () => {
+test('tempo scales the clock linearly and never breaks the scoring bounds', () => {
   // The host's tempo multiplier scales roundMs and nothing else. pace=1 must be
   // the exact same object shape; other paces scale the clock; and the scoring
   // invariant has to survive every pace, since a wrong scale would let the clock
@@ -55,16 +55,16 @@ test('tempo scales the clock linearly and never breaks attempt-dominance', () =>
       assert.equal(scaled.roundMs, Math.round(base.roundMs * pace), `misto r${round} @${pace}`);
       assert.equal(scaled.boards, base.boards, 'pace never touches the board count');
       assert.equal(scaled.bounty, base.bounty, 'pace never touches the payout');
-      assertAttemptsDominate(scaled); // the invariant holds at every tempo
+      assertScoringBounds(scaled); // the bounds hold at every tempo
     }
-    for (const id of MODE_IDS) assertAttemptsDominate(roundConfig(id, 1, pace));
+    for (const id of MODE_IDS) assertScoringBounds(roundConfig(id, 1, pace));
   }
 });
 
-test('fewer attempts always beats more attempts, in every playable config', () => {
+test('speed can cross one attempt tier but never two, in every playable config', () => {
   // ROUND_CONFIGS and not MODES: each MISTO rung governs real rounds under an
   // id that MODES maps to something else entirely.
-  for (const cfg of ROUND_CONFIGS) assertAttemptsDominate(cfg);
+  for (const cfg of ROUND_CONFIGS) assertScoringBounds(cfg);
   assert.ok(ROUND_CONFIGS.length >= MODE_IDS.length + MISTO_RUNGS.length);
 });
 
@@ -125,34 +125,39 @@ test('escalating in MISTO is never a shortcut past a strong early round', () => 
     { wordsSolved: 4, guessesUsed: 9, elapsedMs: MISTO_RUNGS[3]!.roundMs, streakBefore: 99 },
     MISTO_RUNGS[3]!,
   ).total;
-  assert.equal(strongTermo, 2983);
+  assert.equal(strongTermo, 3312);
   assert.ok(sloppiestQuarteto < strongTermo,
     `the worst full QUARTETO (${sloppiestQuarteto}) must lose to a sharp TERMO (${strongTermo})`);
 });
 
-test('MISTO rungs pay within 1.16:1 of each other, the flat modes 1.625:1', () => {
+test('MISTO rungs pay within 1.15:1 of each other, the flat modes 1.57:1', () => {
   // The whole point of the compressed bounties: which rung you happen to be
   // strongest at should not decide the match.
   const ceiling = (m: typeof MODES.termo) =>
     scoreRound({ wordsSolved: m.boards, guessesUsed: m.boards, elapsedMs: 0, streakBefore: 99 }, m).total;
   const rungs = MISTO_RUNGS.map(ceiling);
-  assert.deepEqual(rungs, [4800, 5050, 5300, 5550]);
+  assert.deepEqual(rungs, [5250, 5500, 5750, 6000]);
   // Every ceiling is its bounty plus the format-blind maximum, which is what
   // makes bounty the only balancing dial there is.
   const blind = ATTEMPT_STEP * 5 + SPEED_MAX + PERFECT_BONUS + STREAK_MAX;
   assert.deepEqual(rungs, MISTO_RUNGS.map((m) => m.bounty + blind));
   assert.ok(rungs[3]! / rungs[0]! < 1.16, `spread ${rungs[3]! / rungs[0]!}`);
   const flat = [MODES.termo, MODES.dueto, MODES.trieto, MODES.quarteto].map(ceiling);
-  assert.deepEqual(flat, [4800, 5800, 6800, 7800]);
-  assert.ok(flat[3]! / flat[0]! > 1.6, 'the single-format spread is the thing MISTO compresses');
+  assert.deepEqual(flat, [5250, 6250, 7250, 8250]);
+  assert.ok(flat[3]! / flat[0]! > 1.5, 'the single-format spread is the thing MISTO compresses');
 });
 
-test('the attempts axis outranks the clock, concretely', () => {
+test('speed crosses one attempt tier but not two, concretely', () => {
   const m = MODES.termo;
   const slowIn3 = scoreRound({ wordsSolved: 1, guessesUsed: 3, elapsedMs: m.roundMs, streakBefore: 0 }, m);
   const fastIn4 = scoreRound({ wordsSolved: 1, guessesUsed: 4, elapsedMs: 0, streakBefore: 0 }, m);
-  assert.ok(slowIn3.total > fastIn4.total,
-    `3 guesses at the buzzer (${slowIn3.total}) must beat 4 guesses instantly (${fastIn4.total})`);
+  const fastIn5 = scoreRound({ wordsSolved: 1, guessesUsed: 5, elapsedMs: 0, streakBefore: 0 }, m);
+  // The blend: a lightning solve one tier worse overtakes a crawling one.
+  assert.ok(fastIn4.total > slowIn3.total,
+    `4 guesses instantly (${fastIn4.total}) should now pass 3 at the buzzer (${slowIn3.total})`);
+  // The bound: two tiers worse never catches it, however fast.
+  assert.ok(slowIn3.total > fastIn5.total,
+    `3 at the buzzer (${slowIn3.total}) must still beat 5 instantly (${fastIn5.total})`);
 });
 
 test('the clock breaks ties inside one attempt bracket', () => {

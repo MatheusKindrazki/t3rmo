@@ -25,23 +25,29 @@ DUETO de jogar dois Termos lado a lado. No MISTO a partida sobe degrau a degrau
 
 ## Como se pontua
 
-A regra que o jogador ouve é "menos tentativas fica na frente". Com mil pessoas
-essa regra sozinha produz empate em massa — em TERMO a tabela inteira encosta em
-3 tentativas — então o relógio desempata. O risco é o relógio desempatar **mais
-do que empate**, e por isso a dominância é estrutural, não um ajuste de número:
+Pontua-se por **palavra acertada**, **nº de tentativas**, **tempo** e — nos
+híbridos — **quantas palavras** você fechou. A tabela ordena por pontos → menos
+tentativas → mais palavras → menos tempo.
+
+A velocidade **não** é só desempate: um acerto relâmpago em `n+1` tentativas
+pode passar um acerto lento em `n`. Mas isso é limitado por construção — a
+velocidade sobe você **um** degrau de tentativa, nunca dois:
 
 ```
-ATTEMPT_STEP (600)  >  SPEED_MAX (250) + STREAK_MAX (300)
+ATTEMPT_STEP (600)  <  SPEED_MAX (700)                 (cruza UM degrau)
+SPEED_MAX (700) + STREAK_MAX (300)  <  2 × ATTEMPT_STEP (1200)   (nunca dois)
 ```
 
-Uma tentativa a mais custa mais do que todos os desempates juntos conseguem
-devolver. Quem fechou em `n` não pode ser ultrapassado, naquela rodada, por
-alguém que precisou de `n+1` — não importa quão rápido foi nem que sequência
-carregava. `assertAttemptsDominate()` prova isso em **todos** os formatos,
-inclusive em cada degrau do MISTO, e roda no start de cada isolate.
+Ou seja: um acerto no gongo em `n` ainda bate o melhor acerto possível em `n+2`
+(instantâneo, sequência máxima), e um acerto perfeito (mínimo de tentativas)
+mantém seu bônus e continua difícil de passar. `assertScoringBounds()` prova as
+duas metades em **todos** os formatos, inclusive em cada degrau do MISTO, e roda
+no start de cada isolate.
 
-> A primeira versão tinha `280 < 450` e violava a promessa em silêncio: acertar
-> em 3 instantaneamente batia acertar em 2. O teste pegou.
+> Antes, tentativas eram absolutas (`ATTEMPT_STEP > SPEED_MAX + STREAK_MAX`): 2
+> sempre batia 3, tempo só desempatava dentro do mesmo número. O dono pediu o
+> blend — velocidade cruzando um degrau — e o único número que mudou foi o
+> `SPEED_MAX` (250 → 700). O resto do balanço (e a compressão do MISTO) sobreviveu.
 
 ### O problema que o MISTO cria
 
