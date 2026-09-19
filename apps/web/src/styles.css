@@ -910,7 +910,10 @@ button.tile:hover { background: rgba(25, 21, 22, .5); }
     min-height: var(--tap);
     display: flex; align-items: center;
   }
-  .kb { padding-bottom: calc(12px + var(--tap) + 8px + env(safe-area-inset-bottom)); }
+  /* No reservation for the floating tab any more — it was replaced by the
+     vitals row, and the padding it left behind was pure dead space under the
+     keyboard on every phone. */
+  .kb { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
   .key { height: 46px; font-size: 14px; }
 }
 

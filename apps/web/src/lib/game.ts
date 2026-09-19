@@ -53,13 +53,23 @@ export function tilePx(boards: number, maxGuesses: number, vw: number, vh: numbe
   // same number the stylesheet does, or the board is sized against a keyboard
   // that is no longer there. Same for the header and for the rails, which the
   // height terms in those queries can retire even on a wide screen.
-  const GAP = 5, BOARD_GAP = 20, PAD = 44;
+  const GAP = 5, BOARD_GAP = 20;
+  const narrow = vw <= 900 || vh <= 520;
+
   const HEADER = vh <= 540 ? 44 : 54;
-  const KBD = vh <= 540 ? 120 : vh <= 640 ? 140 : vh <= 760 ? 162 : 190;
+  // The vitals row only exists on narrow screens, and forgetting it is exactly
+  // how the board came out one row too tall on a phone: sized against space
+  // that something else was already occupying, so the top row was clipped by a
+  // container that could not grow.
+  const VITALS = narrow ? 48 : 0;
+  // Must track the keyboard the STYLESHEET renders, not a guess: the keys are
+  // 46px under 900px wide and shrink again on short viewports.
+  const KBD = vh <= 540 ? 116 : narrow ? 168 : vh <= 640 ? 140 : vh <= 760 ? 162 : 190;
+  const PAD = narrow ? 24 : 44;
   const RAILS = vw > 1280 && vh > 620 ? 520 : (vw > 900 && vh > 520) ? 260 : 0;
   const colW = Math.min(vw - RAILS - 24, 720);
   const wFit = (colW - (gx - 1) * BOARD_GAP) / gx / 5 - GAP;
-  const hFit = (vh - HEADER - KBD - PAD - (gy - 1) * BOARD_GAP) / gy / maxGuesses - GAP;
+  const hFit = (vh - HEADER - VITALS - KBD - PAD - (gy - 1) * BOARD_GAP) / gy / maxGuesses - GAP;
   return Math.max(18, Math.min(76, Math.floor(Math.min(wFit, hFit))));
 }
 
