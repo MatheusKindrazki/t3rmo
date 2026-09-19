@@ -56,7 +56,17 @@ export const PAGE_MAX = 100;
  * cheia" the failure instead of "colapso desconhecido", and the number is ours
  * to raise once the real edge has been measured past 400.
  */
-export const ROOM_MAX = 3000;
+/**
+ * Measured, not guessed. On the real edge a single Durable Object ACCEPTS 10k
+ * sockets fine (9987/10000 connected, client lag 6 ms) but SATURATES on the
+ * guess path long before that: at 10k the server-side queue hit RTT p95 7.4 s
+ * and dropped 287 pings outright — the object lost messages, not just delayed
+ * them. The bottleneck is the single thread, confirmed by the load test's own
+ * client-vs-server verdict. So the honest ceiling for ONE room, until a room
+ * is sharded across objects, is well below 10k. 1500 sits with margin under
+ * where the queue starts climbing; raise it only against a fresh measurement.
+ */
+export const ROOM_MAX = 1500;
 
 /** A socket that never sends `join` within this window is dropped. */
 export const JOIN_GRACE_MS = 10_000;

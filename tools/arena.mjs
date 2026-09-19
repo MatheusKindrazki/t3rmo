@@ -37,6 +37,7 @@ const MODE = arg('mode', 'misto');
 const ROUNDS = Number(arg('rounds', 4));
 const RAMP = Number(arg('ramp', Math.max(8000, BOTS * 60)));
 const START_IN = Number(arg('start-in', 15));
+const START_AT = Number(arg('start-at', 0)); // inicia quando N sockets conectaram (medição)
 const WAIT = !flag('no-wait');
 
 const LOCAL = /^(127\.0\.0\.1|localhost|\[::1\])(:|$)/.test(HOST);
@@ -106,10 +107,21 @@ const main = async () => {
     '--mode', MODE, '--rounds', String(ROUNDS), '--ramp', String(RAMP),
   ], { stdio: 'inherit' });
 
-  // The host starts the match, rather than leaving it to the server's 30s
-  // auto-start — which would otherwise fire while the fleet is still ramping.
-  setTimeout(() => { if (!started) { started = true; send({ t: 'start' }); say(`${C.g}✓ partida iniciada${C.r}`); } },
-    (WAIT ? START_IN : 5) * 1000);
+  // The host starts the match. With --start-at N it waits until N sockets are
+  // actually connected — the way to measure steady-state fan-out instead of the
+  // ramp. Otherwise it starts on a fixed delay.
+  const fire = () => { if (!started) { started = true; send({ t: 'start' }); say(`${C.g}✓ partida iniciada${C.r}`); } };
+  if (START_AT > 0) {
+    say(`${C.dim}vou iniciar quando ${START_AT} sockets estiverem conectados…${C.r}`);
+    const poll = setInterval(async () => {
+      const i = await info(code);
+      if ((i?.online ?? 0) >= START_AT) { clearInterval(poll); fire(); }
+    }, 2000);
+    // teto de segurança: não espera para sempre
+    setTimeout(() => { clearInterval(poll); fire(); }, 180_000);
+  } else {
+    setTimeout(fire, (WAIT ? START_IN : 5) * 1000);
+  }
 
   const bye = () => { try { host.close(); } catch {} try { fleet.kill(); } catch {} process.exit(0); };
   process.on('SIGINT', bye);

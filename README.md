@@ -141,6 +141,7 @@ derrubados, e diz **de que lado** foi o gargalo — cliente ou servidor.
 | local | 3000 | 0 recusas · palpite p95 61 ms (era 310 antes de tirar um sort por palpite) |
 | local | 5000 | 0 quedas · 4997/5000 fecharam |
 | local | 10000 | **não alcançado** — o `wrangler dev` recusa upgrade em ~6.300 |
+| **produção (borda real)** | **10000** | **conecta 9987/10000, 0 recusas na conexão — mas o palpite satura: RTT p95 7,4 s, 287 pings perdidos. Um DO não serve 10k jogando.** |
 
 ## Rodando
 
@@ -173,9 +174,14 @@ o apex meio-ligado respondendo 522.
 - **Ranking é por sala e por partida.** Sem conta, sem ELO persistente, sem
   temporada — o placar zera quando a partida acaba. O progresso individual é
   `localStorage`, por navegador.
-- **10.000 numa sala não foi provado.** O maior teste limpo é 5.000 local e 400
-  em produção. Um DO é single-thread, e onde ele para na borda real **não foi
-  medido**.
+- **Uma sala não serve 10.000 jogando — medido na borda real.** Um Durable
+  Object aceita as 10k conexões (9987/10000, lag do cliente 6 ms), mas o caminho
+  do palpite satura muito antes: a fila do objeto chegou a RTT p95 **7,4 s** e
+  **287 pings ficaram sem resposta** — perdeu mensagens, não só atrasou. O teto
+  da sala (`ROOM_MAX`) é **1500** por isso: bem abaixo de onde a fila começa a
+  subir. Servir 10k de verdade exige **sharding** — a sala repartida entre
+  vários objetos com um só dono da resposta e da tabela. Não é opcional para o
+  cenário do streamer, e é a próxima frente.
 - **Um `1006` não diagnosticado.** Sob tráfego sustentado, o dev server local
   derruba **todos** os sockets de uma vez. Reproduzido a 60, 300, 800 e 5000
   bots; nunca em execuções curtas. Não é hibernação e não é o harness. Se
