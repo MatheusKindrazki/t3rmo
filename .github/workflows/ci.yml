@@ -15,8 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No `version:` here on purpose. package.json already declares
+      # packageManager: pnpm@10.11.0, and the action refuses to run when the
+      # version is stated in two places — which is the right call: two sources
+      # of truth for a toolchain version drift apart silently.
       - uses: pnpm/action-setup@v4
-        with: { version: 10 }
 
       - uses: actions/setup-node@v4
         with:
