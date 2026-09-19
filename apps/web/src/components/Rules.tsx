@@ -26,8 +26,21 @@ function Row({ word, tiles }: { word: string; tiles: Tile[] }) {
  */
 const MARKS_KEY = 'arena.marks';
 
+/**
+ * Off by default.
+ *
+ * The symbol existed because teal against sand measured 1.26:1 under
+ * protanopia — the game's entire feedback channel collapsing into one colour
+ * for about one man in sixteen. That is no longer the case: the palette was
+ * rebuilt around a luminance split and the two states now hold 3.08:1 apart
+ * under the same simulation, which is a real difference in lightness, not a
+ * difference in hue. So the colour genuinely does say it, the mark is
+ * redundant for most people, and it goes back to being what it should always
+ * have been — an option for the players who still need it, not furniture
+ * everyone has to look at.
+ */
 export function readMarks(): boolean {
-  try { return localStorage.getItem(MARKS_KEY) !== 'off'; } catch { return true; }
+  try { return localStorage.getItem(MARKS_KEY) === 'on'; } catch { return false; }
 }
 function writeMarks(on: boolean): void {
   try { localStorage.setItem(MARKS_KEY, on ? 'on' : 'off'); } catch { /* private mode */ }
@@ -52,16 +65,12 @@ export function Rules({ onClose }: { onClose: () => void }) {
       <Row word="PULGA" tiles={[0, 0, 0, 0, 0]} />
       <p className="mdl-c">Nenhuma dessas letras está na palavra.</p>
 
-      <p className="mdl-p">
-        A marquinha no canto da peça repete a mesma informação sem depender da cor:
-        <b> bolinha cheia</b> quer dizer posição certa, <b>anel vazado</b> quer dizer que a letra
-        está na palavra em outra posição. Cerca de um homem em cada dezesseis não distingue as
-        duas cores, e a cor é o jogo inteiro aqui. Se você enxerga bem as cores e prefere as
-        peças limpas, pode desligar:
-      </p>
       <label className="switch">
-        <input type="checkbox" checked={!marks} onChange={(e) => setMarks(!e.target.checked)} />
-        <span>peças sem marquinha</span>
+        <input type="checkbox" checked={marks} onChange={(e) => setMarks(e.target.checked)} />
+        <span>
+          marcar as peças com um símbolo além da cor
+          <i>para quem não distingue verde de areia</i>
+        </span>
       </label>
 
       <p className="mdl-p">

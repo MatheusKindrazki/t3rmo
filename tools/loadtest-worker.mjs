@@ -30,6 +30,10 @@ let cfg = null;
 /** RSS before a single socket exists, so the report can quote the MARGINAL
  *  cost of a connection instead of a number dominated by Node's own baseline. */
 let rss0 = process.memoryUsage().rss;
+/** Set before we tear our own sockets down, so our exit is never counted as
+ *  the server hanging up. A harness that scores its own shutdown as a server
+ *  failure is worse than one that does not measure closes at all. */
+let shuttingDown = false;
 const bots = [];
 
 const stats = {
@@ -94,7 +98,8 @@ class Bot {
       // Today's script never looked at this, so a room that hung up on every
       // socket still printed "conectados N/N (falhas 0)". Measured: that is
       // exactly what 6000 bots against local wrangler looks like.
-      if (this.alive) { this.alive = false; stats.closed++; bump(stats.closeCodes, String(e?.code ?? 0)); }
+      if (this.alive && !shuttingDown) { this.alive = false; stats.closed++; bump(stats.closeCodes, String(e?.code ?? 0)); }
+      else this.alive = false;
       this.playing = false;
     };
     ws.onmessage = (ev) => this.onMsg(ev.data);
@@ -280,6 +285,7 @@ process.on('message', (m) => {
   if (m.t === 'host-config') { bots[0]?.send({ t: 'config', mode: m.mode, rounds: m.rounds }); return; }
   if (m.t === 'host-start') { bots[0]?.send({ t: 'start' }); return; }
   if (m.t === 'final') {
+    shuttingDown = true;
     eld.disable();
     send(snapshot(true));
     setTimeout(() => process.exit(0), 250);

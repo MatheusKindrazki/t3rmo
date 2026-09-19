@@ -959,15 +959,16 @@ button.tile:hover { background: rgba(25, 21, 22, .5); }
    them optional is the honest position: the luminance split alone measures
    3.08:1 under protanopia, so the symbol is reinforcement rather than the only
    channel, and a player who reads colour fine may prefer clean tiles. */
-html[data-marks='off'] .tile[data-state]::after,
-html[data-marks='off'] .ex-t[data-state]::after { display: none; }
+html:not([data-marks='on']) .tile[data-state]::after,
+html:not([data-marks='on']) .ex-t[data-state]::after { display: none; }
 
 .switch {
   display: flex; align-items: center; gap: 9px; cursor: pointer;
   font-size: 12px; color: var(--dim); margin: 2px 0 4px;
   min-height: var(--tap);
 }
-.switch input { width: 17px; height: 17px; accent-color: var(--right); cursor: pointer; }
+.switch input { width: 17px; height: 17px; accent-color: var(--right); cursor: pointer; flex-shrink: 0; }
+.switch i { font-style: normal; display: block; font-size: 10.5px; color: var(--mute); margin-top: 2px; }
 
 /* The rules modal shows the same markers as the board, so the legend is the
    thing itself rather than a picture of it. */
