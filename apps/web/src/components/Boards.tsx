@@ -75,7 +75,14 @@ export function Boards({
                             key={c}
                             data-filled={ch !== '' ? true : undefined}
                             data-cursor={c === cursor ? true : undefined}
-                            onClick={() => onPick(c)}
+                            onClick={(e) => {
+                              onPick(c);
+                              // Hand focus back. A focused control owns Enter,
+                              // so leaving focus on the square you just tapped
+                              // meant Enter re-picked that square instead of
+                              // submitting the word.
+                              e.currentTarget.blur();
+                            }}
                             aria-label={`posição ${c + 1}${ch ? `, ${ch}` : ', vazia'}`}
                           >
                             {ch}

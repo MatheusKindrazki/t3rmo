@@ -355,12 +355,23 @@ export default function App() {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      // Bail on anything interactive, not just fields. Checking only
-      // INPUT/TEXTAREA meant a keydown on a <button> still bubbled to window
-      // and got preventDefault()ed, so Enter activated NO button anywhere in
-      // the app — "abrir sala" included, and on the landing the resulting
-      // toast was not even rendered, so the key was completely silent.
-      if ((e.target as HTMLElement | null)?.closest?.('input, textarea, select, button, [href], [contenteditable]')) return;
+      const el = e.target as HTMLElement | null;
+
+      // Text entry owns every key: never steal from a field.
+      if (el?.closest?.('input, textarea, select, [contenteditable]')) return;
+
+      // Buttons own only their ACTIVATION keys.
+      //
+      // The first version of this guard bailed on buttons entirely, which fixed
+      // one bug and caused another: checking only INPUT/TEXTAREA meant a
+      // keydown on a <button> bubbled to window and got preventDefault()ed, so
+      // Enter activated no button anywhere in the app — but bailing on the
+      // whole element meant that after tapping a draft square or an on-screen
+      // key (both buttons, both of which take focus) typing did nothing at all.
+      // Enter and Space belong to the focused control; letters and arrows
+      // belong to the game.
+      const onControl = !!el?.closest?.('button, [href], [role="button"]');
+      if (onControl && (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar')) return;
       if (e.key === 'Enter') { e.preventDefault(); return submit(); }
       if (e.key === 'Backspace') { e.preventDefault(); return dispatch({ k: 'back' }); }
       if (e.key === 'Delete') { e.preventDefault(); return dispatch({ k: 'back' }); }

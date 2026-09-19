@@ -135,10 +135,10 @@ input { font: inherit; color: inherit; }
 
 .stage {
   display: grid;
-  grid-template-columns: var(--rail) minmax(0, 1fr) var(--rail);
+  grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--rail-w);
   min-height: 0;
 }
-@media (max-width: 1280px) { .stage { grid-template-columns: minmax(0, 1fr) var(--rail); } .rail-l { display: none; } }
+@media (max-width: 1280px) { .stage { grid-template-columns: minmax(0, 1fr) var(--rail-w); } .rail-l { display: none; } }
 @media (max-width: 900px)  { .stage { grid-template-columns: minmax(0, 1fr); } .rail-r { display: none; } }
 
 /* ------------------------------------------------------------------ header */
@@ -315,17 +315,19 @@ input { font: inherit; color: inherit; }
   width: var(--tile); height: var(--tile);
   display: grid; place-items: center;
   border-radius: var(--radius);
-  background: rgba(25, 21, 22, .42);
+  background: rgba(25, 21, 22, .26);
+  box-shadow: inset 0 0 0 1px rgba(25, 21, 22, .38);
   font-family: var(--f-game);
   font-size: calc(var(--tile) * .47);
   font-weight: 600; line-height: 1; text-transform: uppercase;
   color: var(--chalk); user-select: none;
 }
 .tile[data-cursor='true'] { box-shadow: inset 0 0 0 2px var(--you); }
-.tile[data-filled='true'] { background: rgba(25, 21, 22, .58); animation: pop .12s var(--ease); }
+.tile[data-filled='true'] { background: rgba(25, 21, 22, .46); box-shadow: inset 0 0 0 1px rgba(250,250,255,.16); animation: pop .12s var(--ease); }
 @keyframes pop { from { transform: scale(.9); } to { transform: scale(1); } }
 
 .tile[data-state] { animation: flip .5s var(--ease) both; }
+.tile[data-state] { box-shadow: none; }
 .tile[data-state='0'] { background: var(--wrong); }
 .tile[data-state='1'] { background: var(--place); color: var(--ink); }
 .tile[data-state='2'] { background: var(--right); color: var(--chalk); }
@@ -352,8 +354,8 @@ input { font: inherit; color: inherit; }
 .tile { position: relative; }
 
 @keyframes flip {
-  0%   { transform: rotateX(0deg);   background: rgba(25,21,22,.58); color: var(--chalk); }
-  49%  { transform: rotateX(-90deg); background: rgba(25,21,22,.58); color: var(--chalk); }
+  0%   { transform: rotateX(0deg);   background: rgba(25,21,22,.46); color: var(--chalk); }
+  49%  { transform: rotateX(-90deg); background: rgba(25,21,22,.46); color: var(--chalk); }
   50%  { transform: rotateX(-90deg); }
   100% { transform: rotateX(0deg); }
 }
@@ -827,7 +829,7 @@ button.tile:hover { background: rgba(25, 21, 22, .5); }
   box-shadow: inset 0 0 0 2px var(--you);
   /* The caret is the second signal: the ring alone was 2.13:1 against the empty
      tile and invisible at the 24px QUARTETO size. */
-  background: rgba(143, 211, 255, .1);
+  background: rgba(143, 211, 255, .14);
 }
 
 .board-scroll { display: flex; flex-direction: column; gap: var(--gap); }

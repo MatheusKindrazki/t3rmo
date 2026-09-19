@@ -26,7 +26,12 @@ export function Keyboard({
                 data-wide={wide || undefined}
                 data-solid={solid}
                 disabled={disabled}
-                onClick={() => onKey(k)}
+                onClick={(e) => {
+                  onKey(k);
+                  // Same reason as the draft squares: a key that keeps focus
+                  // swallows the next Enter, which is the one that submits.
+                  e.currentTarget.blur();
+                }}
                 aria-label={k === 'BACK' ? 'apagar letra' : k === 'ENTER' ? 'enviar palpite' : `letra ${k}`}
               >
                 {k === 'BACK' ? '⌫' : k === 'ENTER' ? 'ENVIAR' : k}
