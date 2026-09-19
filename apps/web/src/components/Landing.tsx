@@ -18,6 +18,15 @@ function Mark() {
 
 /** The board shape, drawn — four pips said nothing four squares do not. */
 function Glyph({ n }: { n: number }) {
+  // n = board count for TERMO..QUARTETO. MISTO passes 0 and gets a rising
+  // ladder instead — it is the "all of them, in sequence" mode, not one board.
+  if (n === 0) {
+    return (
+      <span className="glyph glyph-ladder" aria-hidden>
+        {[1, 2, 3, 4].map((h) => <span key={h} style={{ height: `${h * 3 + 2}px` }} />)}
+      </span>
+    );
+  }
   return <span className="glyph" data-n={n}>{Array.from({ length: n }, (_, i) => <span key={i} />)}</span>;
 }
 
@@ -67,22 +76,36 @@ export function Landing({
 
             <span className="label" style={{ marginTop: 16 }}>formato</span>
             <div className="seg">
-              {MODE_IDS.map((m) => (
+              {MODE_IDS.filter((m) => m !== 'misto').map((m) => (
                 <button key={m} className="seg-b" data-on={mode === m} onClick={() => setMode(m)}>
                   <Glyph n={MODES[m].boards} />
-                  <span>{MODES[m].label}</span>
+                  <span className="seg-name">{MODES[m].label}</span>
+                  <span className="seg-meta">{MODES[m].boards} palavra{MODES[m].boards > 1 ? 's' : ''}</span>
                 </button>
               ))}
             </div>
+            {/* MISTO is not a fifth peer in the grid — it is the combination of
+                the other four, so it gets its own full-width row that says so. */}
+            <button className="seg-misto" data-on={mode === 'misto'} onClick={() => setMode('misto')}>
+              <Glyph n={0} />
+              <span className="seg-misto-text">
+                <b>MISTO</b>
+                <i>sobe a escada — um TERMO, um DUETO, um TRIETO, um QUARTETO</i>
+              </span>
+            </button>
 
             <div className="lp-rounds">
-              <label className="label" htmlFor="rounds">rodadas · <b>{rounds}</b></label>
+              <label className="label" htmlFor="rounds">rodadas <b>{rounds}</b></label>
               <input
-                id="rounds" type="range" min={1} max={12} value={rounds}
+                id="rounds" className="slider" type="range" min={1} max={12} value={rounds}
                 onChange={(e) => setRounds(Number(e.target.value))}
-                style={{ accentColor: 'var(--right)' }}
+                style={{ ['--fill' as string]: `${((rounds - 1) / 11) * 100}%` }}
               />
-              <span className="lp-meta">{cfg.maxGuesses} tentativas · {fmtClock(cfg.roundMs)} por rodada</span>
+              <span className="lp-meta">
+                {mode === 'misto'
+                  ? `${rounds} rodada${rounds > 1 ? 's' : ''} · a escada recomeça a cada 4`
+                  : `${cfg.maxGuesses} tentativas · ${fmtClock(cfg.roundMs)} por rodada`}
+              </span>
             </div>
 
             <button className="btn lp-cta" disabled={busy} onClick={() => onCreate(mode, rounds)}>

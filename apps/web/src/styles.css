@@ -562,19 +562,43 @@ input { font: inherit; color: inherit; }
 .input::placeholder { color: var(--mute); }
 .input:focus { border-color: var(--right); background: rgba(58,163,148,.08); }
 
-.seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+/* Four base formats as an even 2x2 — a 4-wide row left MISTO orphaned on a
+   second line, and 2x2 gives each card room for its glyph, name and word count
+   without crowding. MISTO gets its own full-width row below. */
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .seg-b {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 7px;
-  padding: 9px 8px; border-radius: var(--radius);
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  padding: 12px 13px; border-radius: 8px;
   border: 1px solid rgba(250,250,255,.1); background: rgba(250,250,255,.04);
-  font-size: 10px; font-weight: 700; letter-spacing: .04em; color: var(--dim);
-  transition: border-color .15s, color .15s, background-color .15s;
+  transition: border-color .15s, background-color .15s;
 }
-.seg-b:hover { border-color: rgba(250,250,255,.28); color: var(--chalk); }
-.seg-b[data-on='true'] { border-color: var(--right); color: var(--right); background: rgba(58,163,148,.14); }
+.seg-b:hover { border-color: rgba(250,250,255,.28); }
+.seg-b[data-on='true'] { border-color: var(--right); background: rgba(58,163,148,.14); }
+.seg-name {
+  font-family: var(--f-game); font-weight: 600; font-size: 15px; color: var(--chalk);
+  line-height: 1;
+}
+.seg-b[data-on='true'] .seg-name { color: var(--right-txt); }
+.seg-meta { font-size: 10px; color: var(--mute); letter-spacing: .02em; }
+
+/* MISTO: the combination, so a wide row that reads as one, not a fifth peer. */
+.seg-misto {
+  display: flex; align-items: center; gap: 13px; width: 100%;
+  margin-top: 8px; padding: 12px 14px; border-radius: 8px;
+  border: 1px solid rgba(250,250,255,.1); background: rgba(250,250,255,.04);
+  text-align: left; transition: border-color .15s, background-color .15s;
+}
+.seg-misto:hover { border-color: rgba(250,250,255,.28); }
+.seg-misto[data-on='true'] { border-color: var(--place); background: rgba(232,200,142,.12); }
+.seg-misto-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.seg-misto-text b {
+  font-family: var(--f-game); font-weight: 600; font-size: 15px; color: var(--chalk); line-height: 1;
+}
+.seg-misto[data-on='true'] .seg-misto-text b { color: var(--place); }
+.seg-misto-text i { font-style: normal; font-size: 10.5px; color: var(--mute); line-height: 1.35; }
 
 .glyph {
-  display: grid; gap: 2px; align-content: end; height: 18px;
+  display: grid; gap: 2px; align-content: end; height: 20px;
   /* Fixed box: a single square and a 2x2 have different natural heights, which
      pushed QUARTETO's label a row below the other three. */
 }
@@ -582,11 +606,47 @@ input { font: inherit; color: inherit; }
 .glyph[data-n='2'] { grid-template-columns: repeat(2, 1fr); }
 .glyph[data-n='3'] { grid-template-columns: repeat(3, 1fr); }
 .glyph[data-n='4'] { grid-template-columns: repeat(2, 1fr); }
-.glyph span { width: 6px; height: 8px; border-radius: 1.5px; background: var(--mute); }
+.glyph span { width: 8px; height: 10px; border-radius: 2px; background: var(--mute); }
 .seg-b[data-on='true'] .glyph span { background: var(--right); }
 
-.lp-rounds { display: flex; flex-direction: column; margin-top: 18px; }
-.lp-rounds .label { margin-bottom: 4px; }
+/* MISTO's glyph is a rising ladder, bottom-aligned, one bar per rung. */
+.glyph-ladder {
+  display: flex; align-items: flex-end; gap: 3px; height: 20px; flex-shrink: 0;
+}
+.glyph-ladder span { width: 5px; border-radius: 2px; background: var(--mute); }
+.seg-misto[data-on='true'] .glyph-ladder span { background: var(--place); }
+
+.lp-rounds { display: flex; flex-direction: column; margin-top: 20px; }
+.lp-rounds .label { margin-bottom: 10px; display: flex; align-items: baseline; gap: 7px; }
+.lp-rounds .label b {
+  font-family: var(--f-game); font-weight: 600; font-size: 15px; color: var(--right-txt);
+  letter-spacing: 0;
+}
+
+/* Custom range: brand track and a thumb big enough for a thumb. The native
+   accent-color gave a thin grey rail that read as unfinished. */
+.slider {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 6px; border-radius: 3px; cursor: pointer;
+  background: linear-gradient(
+    to right,
+    var(--right) 0%, var(--right) var(--fill, 40%),
+    rgba(250,250,255,.12) var(--fill, 40%), rgba(250,250,255,.12) 100%
+  );
+  outline: none;
+}
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--chalk); border: 3px solid var(--right);
+  cursor: pointer; box-shadow: 0 2px 6px rgba(25,21,22,.4);
+}
+.slider::-moz-range-thumb {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--chalk); border: 3px solid var(--right); cursor: pointer;
+}
+.slider::-moz-range-track { height: 6px; border-radius: 3px; background: rgba(250,250,255,.12); }
+.slider::-moz-range-progress { height: 6px; border-radius: 3px; background: var(--right); }
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center;
