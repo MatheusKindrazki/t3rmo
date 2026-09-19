@@ -1249,3 +1249,18 @@ html:not([data-marks='on']) .ex-t[data-state]::after { display: none; }
   padding: 12px; letter-spacing: .03em;
 }
 .rankfull-me:hover { background: rgba(143,211,255,.16); }
+
+/* "It's not frozen" — live wait state after you finish while others play. */
+.wait-live {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  margin: 8px auto 2px; padding: 8px 14px; max-width: 340px;
+  font-size: 13px; color: var(--chalk);
+  background: rgba(79,179,162,.10); border: 1px solid var(--edge); border-radius: 999px;
+}
+.wait-live b { color: var(--right-txt); font-weight: 700; }
+.wait-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--right-txt);
+  animation: wait-pulse 1.2s ease-in-out infinite;
+}
+@keyframes wait-pulse { 0%,100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.15); } }
+@media (prefers-reduced-motion: reduce) { .wait-dot { animation: none; } }

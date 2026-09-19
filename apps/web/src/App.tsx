@@ -616,6 +616,17 @@ export default function App() {
               tile={tile}
             />
           </div>
+          {st.finished && phase === 'playing' && (
+            // You solved fast and now the board just sits there — without this it
+            // reads as frozen. It is not: the room is still thinking, and this
+            // ticks down as they close.
+            <div className="wait-live" role="status">
+              <span className="wait-dot" aria-hidden />
+              {st.online - st.solvedCount > 0
+                ? <>você fechou · <b>{st.online - st.solvedCount}</b> ainda no jogo</>
+                : <>você fechou · fim da rodada chegando…</>}
+            </div>
+          )}
           <Keyboard
             states={ks}
             boards={cfg.boards}
