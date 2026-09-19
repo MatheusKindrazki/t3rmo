@@ -70,13 +70,14 @@ export function RoundEndVeil({
 }
 
 export function MatchEndVeil({
-  standings, you, answers, onAgain, isHost,
+  standings, you, answers, onAgain, onLeave, isHost,
 }: {
   standings: RowWire[];
   you: { rank: number; score: number } | null;
   /** The final round's words — nothing else ever reveals them. */
   answers: string[];
   onAgain: () => void;
+  onLeave: () => void;
   isHost: boolean;
 }) {
   const podium = standings.slice(0, 3);
@@ -130,9 +131,16 @@ export function MatchEndVeil({
           </div>
         )}
 
-        {isHost
-          ? <button className="btn" style={{ marginTop: 18, position: 'relative', zIndex: 2 }} onClick={onAgain}>jogar de novo</button>
-          : <div className="hint" style={{ marginTop: 18 }}>aguardando quem criou a sala começar outra</div>}
+        {/* Everyone gets a way out to the home screen — the non-host used to be
+            stranded on "aguardando…" with no exit at all. The host also gets
+            to restart the match in place. */}
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 18, flexWrap: 'wrap', position: 'relative', zIndex: 2 }}>
+          {isHost && <button className="btn" onClick={onAgain}>jogar de novo</button>}
+          <button className="btn" data-variant="ghost" onClick={onLeave}>voltar ao início</button>
+        </div>
+        {!isHost && (
+          <div className="hint" style={{ marginTop: 12 }}>quem criou a sala pode começar outra partida</div>
+        )}
       </div>
     </div>
   );

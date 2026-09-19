@@ -601,6 +601,7 @@ export default function App() {
                 answers={st.matchEnd.answers}
                 isHost={isHost}
                 onAgain={() => sock.current?.send({ t: 'start' })}
+                onLeave={leave}
               />
             : <DeadRoomVeil code={st.room.code} onLeave={leave} />)}
         </main>
