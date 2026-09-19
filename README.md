@@ -189,10 +189,14 @@ o apex meio-ligado respondendo 522.
   subir. Servir 10k de verdade exige **sharding** — a sala repartida entre
   vários objetos com um só dono da resposta e da tabela. Não é opcional para o
   cenário do streamer, e é a próxima frente.
-- **Reconexão preserva o jogo por 120 s.** Um celular que bloqueia, troca de
-  rede ou vai para segundo plano cai e volta — o estado é guardado por
-  `clientId` (em memória e em storage, sobrevive à hibernação) e recuperado no
-  reconnect. Passado esse tempo, o assento é liberado.
+- **Reconexão preserva o jogo — inclusive através de um deploy.** Um celular
+  que bloqueia, troca de rede ou vai para segundo plano cai e volta com os
+  palpites intactos. O estado é gravado em storage por `clientId` **a cada
+  palpite** (write-through), não só quando o socket cai: um deploy reinicia o
+  Durable Object sem disparar `webSocketClose`, então a única coisa que
+  sobrevive a um release é uma escrita feita durante o jogo. `matchId` garante
+  que um registro de uma partida anterior não devolva placar velho numa nova.
+  A janela em memória segura 120 s; a durável, até a próxima partida.
 
 ## Endurecimento contra abuso
 

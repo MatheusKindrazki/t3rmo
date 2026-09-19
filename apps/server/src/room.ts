@@ -61,6 +61,12 @@ interface Attached {
   lastGuessAt: number;
   /** Last `page` request, for the page cooldown. */
   lastPageAt: number;
+  /**
+   * The match these totals belong to. A record recovered from storage after a
+   * deploy must not pour a previous match's cumulative score into a new one; a
+   * mismatch here means "fresh player", not "reconnect".
+   */
+  matchId: number;
 }
 
 interface Persisted {
@@ -81,6 +87,8 @@ interface Persisted {
    * object — is what tells a typist their room is not real.
    */
   created: boolean;
+  /** Bumped when a match starts; scopes per-player recovery to one match. */
+  matchId: number;
 }
 
 /** What actually comes back from storage: rooms predating `created` lack it. */
@@ -114,11 +122,11 @@ export class Room implements DurableObject {
         // A stored room without the flag is grandfathered in. Erring permissive
         // is deliberate: telling someone their real room does not exist is a
         // worse failure than one legacy typo'd room still resolving.
-        ? { ...stored, created: stored.created ?? true }
+        ? { ...stored, created: stored.created ?? true, matchId: stored.matchId ?? 0 }
         : {
             code: 'SALA', seed: crypto.randomUUID(), mode: 'termo', phase: 'lobby',
             round: 0, rounds: DEFAULT_ROUNDS, deadline: 0, hostId: null, answers: [],
-            quorumAt: 0, created: false,
+            quorumAt: 0, created: false, matchId: 0,
           };
       this.rehydrate();
       this.loaded = true;
@@ -328,19 +336,33 @@ export class Room implements DurableObject {
     let prior = this.evictById(id, ws);
     if (!prior) {
       // No live socket for this id — but they may have dropped moments ago and
-      // still be in limbo. Memory first, then storage (which survives a
-      // hibernation between the drop and the reconnect).
+      // still be in limbo. Memory first, then storage. The storage record is a
+      // live write-through (see onGuess), so it survives not just a hibernation
+      // but a DEPLOY, which restarts the object WITHOUT firing webSocketClose —
+      // that is how every board in a running match went blank on each release.
       const held = this.limbo.get(id);
       if (held && Date.now() - held.at <= LIMBO_MS) prior = held.a;
       else prior = (await this.state.storage.get<Attached>(`l:${id}`)) ?? undefined;
     }
-    if (prior) { this.limbo.delete(id); void this.state.storage.delete(`l:${id}`); }
+    // A record from an earlier match would carry a stale cumulative score into
+    // this one. matchId scopes recovery to the current match; a mismatch is a
+    // fresh player, not a reconnect. Records predating this field lack it and
+    // are grandfathered (beginMatch clears them anyway).
+    if (prior && typeof prior.matchId === 'number' && prior.matchId !== this.meta.matchId) {
+      prior = undefined;
+    }
+    // Keep the durable storage record on rejoin — do NOT delete it: a second
+    // deploy moments after a reconnect must still find the player. The next
+    // guess overwrites it and beginMatch clears it. Only the in-memory limbo
+    // entry is dropped here.
+    if (prior) this.limbo.delete(id);
 
     const cfg = this.roundCfg();
     const a: Attached = prior ?? {
       id, name, guesses: [], solved: new Array(cfg.boards).fill(false),
       score: 0, roundScore: 0, streak: 0, totalGuesses: 0,
       timeMs: 0, totalTimeMs: 0, round: this.meta.round, lastGuessAt: 0, lastPageAt: 0,
+      matchId: this.meta.matchId,
     };
     if (prior && prior.round !== this.meta.round) {
       // Back after a round boundary. Match totals — score, streak, totalGuesses,
@@ -441,6 +463,11 @@ export class Room implements DurableObject {
 
     this.attach(ws, a);
     this.dirty = true;
+    // Write-through so progress is durable the instant it changes. A deploy
+    // restarts the Durable Object without firing webSocketClose, so the
+    // close-time stash never runs — only a live write survives a release.
+    // Fire-and-forget: the result below is sent without waiting on storage.
+    void this.state.storage.put(`l:${a.id}`, a);
 
     // Rank comes from the last tick, not from a fresh sort.
     //
@@ -509,9 +536,19 @@ export class Room implements DurableObject {
 
   private async beginMatch(): Promise<void> {
     this.meta.round = 0;
+    this.meta.matchId += 1;
     this.leaderId = null;
+    // Drop every durable player record from the previous match. A deploy never
+    // fires webSocketClose, so the in-memory sweepLimbo can leave storage keys
+    // orphaned; a new match is the clean point to clear them. matchId already
+    // guards correctness — this only keeps storage from growing unbounded.
+    for (const key of (await this.state.storage.list<Attached>({ prefix: 'l:' })).keys()) {
+      void this.state.storage.delete(key);
+    }
+    this.limbo.clear();
     for (const [ws, a] of this.cache) {
       a.score = 0; a.roundScore = 0; a.streak = 0; a.totalGuesses = 0; a.totalTimeMs = 0;
+      a.matchId = this.meta.matchId;
       this.attach(ws, a);
     }
     await this.startCountdown();
