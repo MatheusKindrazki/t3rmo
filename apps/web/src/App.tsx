@@ -527,10 +527,14 @@ export default function App() {
 
   const phase = st.room.phase;
   // Derived every frame, not frozen at welcome. The server reassigns the host
-  // when one leaves, and RoomSnapshot.hostId already carries it — reading the
+  // when one leaves, and RoomSnapshot.hostPrefix carries enough to recognise it —
   // welcome-time flag meant a promoted player was shown "aguardando quem criou
   // a sala" and no button, while the server would have accepted their start.
-  const isHost = st.room.hostId !== null && st.room.hostId === st.you?.id;
+  // Compared by PREFIX, because the wire no longer carries the full host id —
+  // exposing it let a spectator hijack the room. `welcome.you.isHost` is the
+  // authoritative bootstrap; this keeps it correct across host reassignment
+  // without ever needing the whole id.
+  const isHost = st.room.hostPrefix !== null && st.room.hostPrefix === st.you?.id.slice(0, 8);
   return (
     <div className="shell">
       <TopBar

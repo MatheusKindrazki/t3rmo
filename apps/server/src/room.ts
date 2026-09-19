@@ -254,6 +254,21 @@ export class Room implements DurableObject {
     // frame sent below overwrote the board still on the player's screen.
     // net.ts promises the opposite — "costs you position but not progress" —
     // so this is the code catching up with the promise.
+    // Refuse a clientId that collides with the LIVE host. Reconnect adoption is
+    // keyed by clientId, so without this an attacker who read the host prefix
+    // (or simply guessed a short id) could join as the host and evict the real
+    // one. A genuine host reconnect arrives on a socket whose OLD entry we are
+    // about to replace — that is fine; what we block is a SECOND socket
+    // claiming the host id while the first is still live.
+    if (this.meta.hostId && id === this.meta.hostId && this.hasPlayer(id)) {
+      const existing = this.cache.get(ws);
+      if (!existing || existing.id !== id) {
+        this.send(ws, { t: 'error', code: 'host-taken', message: 'esta sala já tem um anfitrião ativo' });
+        try { ws.close(4002, 'host-collision'); } catch { /* já foi */ }
+        return;
+      }
+    }
+
     const prior = this.evictById(id, ws);
 
     const cfg = this.roundCfg();
@@ -727,7 +742,8 @@ export class Room implements DurableObject {
     return {
       code: this.meta.code, mode: this.meta.mode, phase: this.meta.phase,
       round: this.meta.round, rounds: this.meta.rounds,
-      online: this.cache.size, deadline: this.meta.deadline, hostId: this.meta.hostId,
+      online: this.cache.size, deadline: this.meta.deadline,
+      hostPrefix: this.meta.hostId ? this.meta.hostId.slice(0, 8) : null,
       cfg: { b: cfg.boards, g: cfg.maxGuesses, l: cfg.label },
     };
   }

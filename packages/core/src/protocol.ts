@@ -102,7 +102,17 @@ export interface RoomSnapshot {
   online: number;
   /** Absolute server-clock deadline of the current phase, in ms. */
   deadline: number;
-  hostId: string | null;
+  /**
+   * A SHORT PREFIX of the host's id, never the whole thing.
+   *
+   * The full id was broadcast here, and the id is also the reconnect key — so
+   * any of the ten thousand people watching could read the streamer's id off
+   * the wire, send `join` with it, be adopted as the host, and evict the
+   * streamer with a 4001 they cannot come back from. Proven live: one message
+   * took the room. A prefix lets a client recognise ITS OWN host row without
+   * handing anyone the key; the client compares its own id's prefix.
+   */
+  hostPrefix: string | null;
   /** Config of the round in progress, or of the next one while in lobby. */
   cfg: RoundCfgWire;
 }
