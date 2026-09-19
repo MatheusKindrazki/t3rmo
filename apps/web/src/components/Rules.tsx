@@ -1,4 +1,5 @@
-import { MODES, MODE_IDS, type Tile } from '@arena/core';
+import { useState } from 'react';
+import { MODES, MODE_IDS, MISTO_RUNGS, type ModeConfig, type Tile } from '@arena/core';
 import { fmtClock } from '../lib/game.ts';
 import { Modal } from './Modal.tsx';
 
@@ -23,7 +24,19 @@ function Row({ word, tiles }: { word: string; tiles: Tile[] }) {
  * breaking ties. A player who does not know the second rule will rush, and
  * rushing is exactly the wrong strategy.
  */
+const MARKS_KEY = 'arena.marks';
+
+export function readMarks(): boolean {
+  try { return localStorage.getItem(MARKS_KEY) !== 'off'; } catch { return true; }
+}
+function writeMarks(on: boolean): void {
+  try { localStorage.setItem(MARKS_KEY, on ? 'on' : 'off'); } catch { /* private mode */ }
+  document.documentElement.dataset.marks = on ? 'on' : 'off';
+}
+
 export function Rules({ onClose }: { onClose: () => void }) {
+  const [marks, setMarksState] = useState(readMarks);
+  const setMarks = (on: boolean) => { setMarksState(on); writeMarks(on); };
   return (
     <Modal title="Como jogar" onClose={onClose}>
       <p className="mdl-p">
@@ -38,6 +51,18 @@ export function Rules({ onClose }: { onClose: () => void }) {
 
       <Row word="PULGA" tiles={[0, 0, 0, 0, 0]} />
       <p className="mdl-c">Nenhuma dessas letras está na palavra.</p>
+
+      <p className="mdl-p">
+        A marquinha no canto da peça repete a mesma informação sem depender da cor:
+        <b> bolinha cheia</b> quer dizer posição certa, <b>anel vazado</b> quer dizer que a letra
+        está na palavra em outra posição. Cerca de um homem em cada dezesseis não distingue as
+        duas cores, e a cor é o jogo inteiro aqui. Se você enxerga bem as cores e prefere as
+        peças limpas, pode desligar:
+      </p>
+      <label className="switch">
+        <input type="checkbox" checked={!marks} onChange={(e) => setMarks(!e.target.checked)} />
+        <span>peças sem marquinha</span>
+      </label>
 
       <p className="mdl-p">
         Os acentos são preenchidos automaticamente: digite <b>acucar</b> e o jogo revela <b>AÇÚCAR</b>.
@@ -57,7 +82,7 @@ export function Rules({ onClose }: { onClose: () => void }) {
       </p>
 
       <div className="mode-tab">
-        {MODE_IDS.map((m) => {
+        {MODE_IDS.filter((m) => m !== 'misto').map((m) => {
           const c = MODES[m];
           return (
             <div className="mode-tab-r" key={m}>
@@ -69,6 +94,31 @@ export function Rules({ onClose }: { onClose: () => void }) {
           );
         })}
       </div>
+
+      <div className="mdl-sep">misto — a escada</div>
+
+      <p className="mdl-p">
+        No <b>MISTO</b> a partida sobe degrau a degrau: a primeira rodada é um TERMO, a segunda
+        um DUETO, a terceira um TRIETO e a quarta um QUARTETO. Passou da quarta, recomeça de
+        baixo. Você joga os quatro formatos na mesma partida, cada um valendo pontos — não é
+        preciso escolher no que você é bom.
+      </p>
+      <div className="mode-tab">
+        {MISTO_RUNGS.map((c: ModeConfig, i: number) => (
+          <div className="mode-tab-r" key={i}>
+            <b>{i + 1}ª · {c.label}</b>
+            <span>{c.boards} palavra{c.boards > 1 ? 's' : ''}</span>
+            <span>{c.maxGuesses} tentativas</span>
+            <span>{fmtClock(c.roundMs)}</span>
+          </div>
+        ))}
+      </div>
+      <p className="mdl-p">
+        Os degraus mais difíceis valem um pouco mais, <b>mas não muito</b>: um QUARTETO impecável
+        rende cerca de 15% a mais que um TERMO impecável, não o dobro. Sem isso a última rodada
+        decidiria a mesa sozinha e as três primeiras virariam aquecimento. O nome do degrau em
+        que você está aparece no topo da tela.
+      </p>
 
       <div className="mdl-sep">como se ganha</div>
 

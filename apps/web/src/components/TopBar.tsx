@@ -59,6 +59,10 @@ export function TopBar({
           {copied ? 'link copiado' : room.code}
         </button>
         <span className="hd-round">{room.round || 1}<i>/{room.rounds}</i></span>
+        {/* In MISTO the format changes every round, so the rung has to be on
+            screen — otherwise the player discovers they are in QUARTETO by
+            counting grids. */}
+        {room.mode === 'misto' && <span className="rung">{room.cfg.l}</span>}
       </div>
 
       <div className="hd-c">{showClock && <Clock deadline={room.deadline} serverNow={serverNow} />}</div>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
-  MODES, type Mode, type Tile, type RowWire, type FeedWire,
+  type Mode, type Tile, type RowWire, type FeedWire,
   type RoomSnapshot, type ServerMessage, WORD_LENGTH,
 } from '@arena/core';
 import { RoomSocket, loadClientId, loadName, saveName, type ConnStatus } from './lib/net.ts';
@@ -145,7 +145,7 @@ function reduce(s: State, a: Action): State {
           return { ...s, you: m.you, room: m.room, online: m.room.online };
 
         case 'state': {
-          const boards = MODES[m.room.mode].boards;
+          const boards = m.room.cfg.b;
           const b = m.board;
           return {
             ...s,
@@ -398,7 +398,7 @@ export default function App() {
     recorded.current.round = re.round;
     recordRound(st.room.mode, {
       solvedWords: re.you.solvedWords,
-      boards: MODES[st.room.mode].boards,
+      boards: st.room.cfg.b,
       guesses: re.you.guesses,
       rank: re.you.rank,
     });
@@ -429,7 +429,19 @@ export default function App() {
 
   /* ------------------------------------------------------------ render */
 
-  const cfg = st.room ? MODES[st.room.mode] : null;
+  /**
+   * The round's shape comes off the wire, not off the mode.
+   *
+   * In MISTO the format changes every round — round 1 is TERMO and round 4 is
+   * QUARTETO — so `MODES[room.mode]` is the wrong answer three times out of
+   * four. It said one board of six rows while the server was running four
+   * boards of nine, and the player simply could not see three of the words
+   * they were being scored on. The server publishes the effective config in
+   * every snapshot; this reads it.
+   */
+  const cfg = st.room
+    ? { boards: st.room.cfg.b, maxGuesses: st.room.cfg.g, label: st.room.cfg.l }
+    : null;
   const ks = useMemo(
     () => keyStates(st.guesses, st.tiles, cfg?.boards ?? 1),
     [st.guesses, st.tiles, cfg?.boards],

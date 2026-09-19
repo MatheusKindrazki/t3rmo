@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Fan-out load test.
+ * Fan-out load test — coordinator.
  *
  * The claim under test is not "the game logic works" — the unit tests cover
- * that — it is "one room survives a thousand simultaneous players". The failure
- * mode being hunted is the obvious implementation of a live leaderboard:
- * broadcasting on every guess, which at a thousand players is roughly 66
- * inbound messages a second times a thousand recipients.
+ * that — it is "one room survives ten thousand simultaneous players". The
+ * failure mode being hunted is the obvious implementation of a live
+ * leaderboard: broadcasting on every guess, which at ten thousand players is
+ * roughly 660 inbound messages a second times ten thousand recipients.
  *
  * Bots are real solvers, not spammers. A bot that submits garbage never
  * finishes, never scores and never moves the leaderboard, so the tick frame
@@ -15,224 +15,342 @@
  * three to five guesses, the table churns, and the fan-out is measured under
  * the traffic the real thing produces.
  *
- *   node tools/loadtest.mjs --n 1000 --mode termo --rounds 2
+ * WHY THIS IS MULTI-PROCESS. Measured on this machine (18 cores, ulimit -n
+ * 1048576), one Node process carried 6000 sockets with its event loop still
+ * idle — file descriptors were never the constraint and neither, at that size,
+ * was the solver. What breaks is subtler: a single loop is a single point of
+ * measurement, so when latency climbs you cannot tell whether the server got
+ * slow or your own loop got behind and is now inventing the number it reports.
+ * Splitting the fleet across processes gives every slice its own event-loop
+ * clock, and that is what makes the CLIENT/SERVER verdict at the bottom of the
+ * report an observation instead of a guess.
+ *
+ *   node tools/loadtest.mjs --n 5000 --mode termo --rounds 2
+ *   node tools/loadtest.mjs --n 10000 --workers 8 --ramp 60000
+ *   node tools/loadtest.mjs --n 2000 --code ABCD      # join a human's room
+ *   node tools/fleetwatch.mjs                          # live, in another shell
  */
-import { readFileSync } from 'node:fs';
+import { fork } from 'node:child_process';
+import { writeFileSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { cpus } from 'node:os';
+import { arg, flag, Hist, STATUS_PATH, fmtMs, fmtBytes } from './loadtest-shared.mjs';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const HERE = dirname(fileURLToPath(import.meta.url));
 
-const arg = (k, d) => {
-  const i = process.argv.indexOf(`--${k}`);
-  return i > 0 && process.argv[i + 1] ? process.argv[i + 1] : d;
-};
 const N = Number(arg('n', 200));
 const HOST = arg('host', '127.0.0.1:8791');
 const MODE = arg('mode', 'termo');
 const ROUNDS = Number(arg('rounds', 1));
 const RAMP_MS = Number(arg('ramp', 8000));
-const SAMPLE = 25; // sockets whose inbound frames get measured in detail
+const CODE_IN = arg('code', '');
+const STATUS_FILE = arg('status', STATUS_PATH);
+const QUIET = flag('quiet');
+
+/** MISTO is being added by another agent; accept it before it lands. */
+const MODES = ['termo', 'dueto', 'trieto', 'quarteto', 'misto'];
+if (!MODES.includes(MODE)) {
+  console.error(`modo inválido: ${MODE} (use ${MODES.join(' | ')})`);
+  process.exit(2);
+}
+
 // Local wrangler is plain http; anything else is the real edge behind TLS.
 const LOCAL = /^(127\.0\.0\.1|localhost|\[::1\])(:|$)/.test(HOST);
 const HTTP = LOCAL ? 'http' : 'https';
 const WS = LOCAL ? 'ws' : 'wss';
 
-const normalize = (w) =>
-  w.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z]/g, '');
+/**
+ * ~1500 bots a worker. One process managed 6000 before anything smelled, but
+ * the tail that matters is the instant `roundStart` lands and every bot in the
+ * slice runs its first full-pool filter at once — 113 us each, measured, times
+ * boards. At 1500 that spike is ~0.17 s of CPU per board; at 6000 it is 0.7 s,
+ * which is long enough to distort the very latencies being recorded.
+ */
+const WORKERS = Math.max(1, Math.min(
+  Number(arg('workers', 0)) || Math.ceil(N / 1500),
+  Math.max(1, cpus().length - 2),
+));
+const REPORT_MS = 1000;
 
-const answersSrc = readFileSync(join(root, 'packages/core/src/answers.ts'), 'utf8');
-const POOL = [...answersSrc.split('= [')[1].split('];')[0].matchAll(/'([^']+)'/g)].map((m) => normalize(m[1]));
+const live = new Map();   // worker id -> latest snapshot
+const finals = new Map();
+const kids = [];
+let hostInfo = null, matchEnded = false, t0 = 0, peakSockets = 0;
+let lastGuesses = 0, lastAt = 0, rate = 0, lastPrinted = 0;
 
-/** Same two-pass rule the server uses; bots need it to reason about feedback. */
-function evaluate(guess, answer) {
-  const t = [0, 0, 0, 0, 0];
-  const pool = new Map();
-  for (let i = 0; i < 5; i++) {
-    if (guess[i] === answer[i]) t[i] = 2;
-    else pool.set(answer[i], (pool.get(answer[i]) ?? 0) + 1);
-  }
-  for (let i = 0; i < 5; i++) {
-    if (t[i] === 2) continue;
-    const left = pool.get(guess[i]) ?? 0;
-    if (left > 0) { t[i] = 1; pool.set(guess[i], left - 1); }
-  }
-  return t;
-}
-const sameTiles = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3] && a[4] === b[4];
-
-const stats = {
-  connected: 0, failed: 0, joined: 0,
-  guesses: 0, ok: 0, rejected: 0, solved: 0,
-  latencies: [],
-  frames: 0, frameBytes: 0, frameMax: 0,
-  tickTimes: [],
-  inboundBytes: 0, inboundMsgs: 0,
-  roundsSeen: 0,
+const sum = (f) => { let n = 0; for (const s of live.values()) n += f(s) || 0; return n; };
+const mergeMaps = (f) => {
+  const out = {};
+  for (const s of live.values()) for (const [k, v] of Object.entries(f(s) || {})) out[k] = (out[k] || 0) + v;
+  return out;
 };
+const maxOf = (f) => { let n = 0; for (const s of live.values()) n = Math.max(n, f(s) || 0); return n; };
 
-class Bot {
-  constructor(i, code) {
-    this.i = i;
-    this.sampled = i < SAMPLE;
-    this.cands = null;
-    this.pending = new Map();
-    this.boards = 1;
-    this.playing = false;
-    this.ws = new WebSocket(`${WS}://${HOST}/api/rooms/${code}/ws`);
-    this.ws.onopen = () => {
-      stats.connected++;
-      this.send({ t: 'join', name: `bot${String(i).padStart(4, '0')}`, clientId: `load-${i}-${Date.now()}`, v: 1 });
-    };
-    this.ws.onerror = () => { stats.failed++; };
-    this.ws.onmessage = (ev) => this.onMsg(ev.data);
-  }
+function aggregate() {
+  const sockets = sum((s) => s.sockets);
+  peakSockets = Math.max(peakSockets, sockets);
+  return {
+    sockets, peakSockets,
+    connected: sum((s) => s.connected), failed: sum((s) => s.failed),
+    joined: sum((s) => s.joined), closed: sum((s) => s.closed),
+    closeCodes: mergeMaps((s) => s.closeCodes), errors: mergeMaps((s) => s.errors),
+    guesses: sum((s) => s.guesses), ok: sum((s) => s.ok), rejected: sum((s) => s.rejected),
+    solves: sum((s) => s.solves), roundsFinished: sum((s) => s.roundsFinished),
+    frames: sum((s) => s.frames), frameBytes: sum((s) => s.frameBytes), frameMax: maxOf((s) => s.frameMax),
+    inboundBytes: sum((s) => s.inboundBytes), inboundMsgs: sum((s) => s.inboundMsgs),
+    pings: sum((s) => s.pings), pongs: sum((s) => s.pongs),
+    rss: sum((s) => s.rss), rss0: sum((s) => s.rss0), lagMax: maxOf((s) => s.lagP99), latP95: maxOf((s) => s.latP95),
+    boardsSeen: mergeMaps((s) => s.boardsSeen),
+  };
+}
 
-  send(m) { if (this.ws.readyState === 1) this.ws.send(JSON.stringify(m)); }
-
-  onMsg(raw) {
-    stats.inboundMsgs++;
-    stats.inboundBytes += raw.length;
-    let m; try { m = JSON.parse(raw); } catch { return; }
-
-    if (m.t === 'welcome') { stats.joined++; return; }
-
-    if (m.t === 'tick' && this.sampled) {
-      stats.frames++;
-      stats.frameBytes += raw.length;
-      stats.frameMax = Math.max(stats.frameMax, raw.length);
-      if (this.i === 0) stats.tickTimes.push(Date.now());
-      return;
-    }
-
-    if (m.t === 'roundStart') {
-      this.boards = m.boards;
-      // One independent candidate list per board; a guess is judged on all.
-      this.cands = Array.from({ length: m.boards }, () => POOL.slice());
-      this.done = new Array(m.boards).fill(false);
-      this.playing = true;
-      if (this.i === 0) stats.roundsSeen++;
-      this.think();
-      return;
-    }
-
-    if (m.t === 'result') {
-      const sent = this.pending.get(m.seq);
-      if (sent) { stats.latencies.push(Date.now() - sent); this.pending.delete(m.seq); }
-      if (!m.ok) { stats.rejected++; this.think(300); return; }
-      stats.ok++;
-      for (let b = 0; b < this.boards; b++) {
-        if (this.done[b]) continue;
-        const tiles = m.tiles[b];
-        if (!tiles) continue;
-        if (m.solved[b]) { this.done[b] = true; continue; }
-        this.cands[b] = this.cands[b].filter((c) => c !== m.word && sameTiles(evaluate(m.word, c), tiles));
-      }
-      if (m.finished) {
-        this.playing = false;
-        if (m.solved.every(Boolean)) stats.solved++;
-        return;
-      }
-      this.think();
-      return;
-    }
-
-    if (m.t === 'roundEnd' || m.t === 'matchEnd') { this.playing = false; }
-  }
-
-  /** Human-ish pacing: nobody submits five words in one second. */
-  think(extra = 0) {
-    if (!this.playing) return;
-    const wait = extra + 900 + Math.random() * 2600;
-    setTimeout(() => {
-      if (!this.playing) return;
-      const open = this.cands
-        .map((c, b) => (this.done[b] ? null : c))
-        .filter((c) => c && c.length);
-      const from = open.length ? open[0] : POOL;
-      const word = from[Math.floor(Math.random() * from.length)];
-      const seq = ++this.seq0 || (this.seq0 = 1);
-      this.pending.set(seq, Date.now());
-      stats.guesses++;
-      this.send({ t: 'guess', word, seq });
-    }, wait);
+function publish(phase, code) {
+  const a = aggregate();
+  const now = Date.now();
+  if (lastAt) rate = ((a.guesses - lastGuesses) * 1000) / Math.max(1, now - lastAt);
+  lastGuesses = a.guesses; lastAt = now;
+  const doc = {
+    ts: now, phase, code, mode: MODE, rounds: ROUNDS, target: N, host: HOST,
+    elapsed: t0 ? (now - t0) / 1000 : 0, rate, agg: a,
+    workers: [...live.values()].map((s) => ({
+      id: s.id, sockets: s.sockets, closed: s.closed, guesses: s.guesses,
+      lagP50: +s.lagP50.toFixed(1), lagP99: +s.lagP99.toFixed(1), lagMax: +s.lagMax.toFixed(1),
+      rss: s.rss,
+    })).sort((x, y) => x.id - y.id),
+  };
+  try { writeFileSync(STATUS_FILE, JSON.stringify(doc)); } catch { /* watcher is optional */ }
+  if (!QUIET && (process.stdout.isTTY || now - lastPrinted >= 5000)) {
+    lastPrinted = now;
+    const el = String(Math.round(doc.elapsed)).padStart(4);
+    process.stdout.write(
+      `${process.stdout.isTTY ? '\r' : '\n'}  ${el}s ${phase.padEnd(9)} sock ${String(a.sockets).padStart(6)}/${N}` +
+      ` · palp ${String(a.guesses).padStart(7)} (${rate.toFixed(0).padStart(4)}/s)` +
+      ` · ok ${a.ok} · rec ${a.rejected} · solv ${a.solves}` +
+      ` · lag ${a.lagMax.toFixed(0).padStart(3)}ms · p95 ${String(a.latP95).padStart(4)}ms` +
+      ` · fech ${a.closed}    `,
+    );
   }
 }
 
-const pct = (arr, p) => {
-  if (!arr.length) return 0;
-  const s = [...arr].sort((a, b) => a - b);
-  return s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))];
-};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const main = async () => {
+async function main() {
   // --code joins an existing room (a human already sitting in it); without it
   // the test mints its own.
-  let code = arg('code', '');
+  let code = CODE_IN;
   if (!code) {
     const res = await fetch(`${HTTP}://${HOST}/api/rooms`, { method: 'POST' });
     ({ code } = await res.json());
   }
-  console.log(`sala ${code} · ${N} bots · modo ${MODE} · ${ROUNDS} rodada(s)\n`);
 
-  const bots = [];
-  const gap = RAMP_MS / N;
-  for (let i = 0; i < N; i++) {
-    bots.push(new Bot(i, code));
-    if (gap >= 1) await new Promise((r) => setTimeout(r, gap));
+  // Round length comes from the server, not from a table in here: MISTO does
+  // not exist in this file's world and its clock must not be guessed at.
+  let roundMs = 240_000, boardsHint = '?';
+  try {
+    const h = await (await fetch(`${HTTP}://${HOST}/api/health`)).json();
+    const cfg = (h.modes || []).find((m) => m.id === MODE);
+    if (cfg) { roundMs = cfg.roundMs; boardsHint = String(cfg.boards); }
+    else console.log(`aviso: o servidor não conhece o modo "${MODE}" (conhece: ${(h.modes || []).map((m) => m.id).join(', ')})`);
+  } catch { console.log('aviso: /api/health não respondeu; usando relógio de rodada conservador'); }
+
+  console.log(`sala ${code} · ${N} bots · modo ${MODE} (boards ${boardsHint}) · ${ROUNDS} rodada(s) · ${WORKERS} worker(s) · ramp ${RAMP_MS} ms`);
+  console.log(`status ao vivo: node tools/fleetwatch.mjs${STATUS_FILE !== STATUS_PATH ? ` --status ${STATUS_FILE}` : ''}\n`);
+
+  // Slices are contiguous so bot 0 — the host when we own the room — is worker
+  // 0's first bot, and the global index still drives the ramp.
+  const rampStart = Date.now() + 500;
+  const per = Math.ceil(N / WORKERS);
+  const runId = Date.now();
+  for (let w = 0; w < WORKERS; w++) {
+    const from = w * per, to = Math.min(N, from + per);
+    if (from >= to) break;
+    const child = fork(join(HERE, 'loadtest-worker.mjs'), { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+    kids.push(child);
+    child.on('message', (m) => {
+      if (m.t === 'tick' || m.t === 'final') live.set(m.id, m);
+      if (m.t === 'final') finals.set(m.id, m);
+      if (m.t === 'host') hostInfo = m;
+      if (m.t === 'matchEnd') matchEnded = true;
+    });
+    child.on('exit', (c) => { if (c !== 0 && c !== null) console.error(`\nworker ${w} saiu com código ${c}`); });
+    child.send({
+      t: 'init',
+      cfg: {
+        id: w, from, to, total: N, host: HOST, code, wsScheme: WS, runId,
+        rampStart, rampMs: RAMP_MS, reportMs: REPORT_MS,
+        // ~25 detailed tick samplers and ~40 ping probes, spread evenly over
+        // the fleet instead of bunched in worker 0.
+        sampleEvery: Math.max(1, Math.floor(N / 25)),
+        probeEvery: Math.max(1, Math.floor(N / 40)),
+      },
+    });
   }
 
-  // Give the ramp time to settle, then the first socket (the host) configures
-  // and starts the match.
-  await new Promise((r) => setTimeout(r, 2500));
-  console.log(`conectados ${stats.connected}/${N} · join confirmado ${stats.joined}`);
+  t0 = Date.now();
+  const timer = setInterval(() => publish('ramp', code), REPORT_MS);
+
+  // Wait out the ramp, then let the room settle before anyone starts.
+  const rampEnd = rampStart + RAMP_MS;
+  while (Date.now() < rampEnd) await sleep(200);
+  await sleep(2500);
+  clearInterval(timer);
+
+  const a0 = aggregate();
+  console.log(`\nconectados ${a0.connected}/${N} · join confirmado ${a0.joined} · fechados ${a0.closed}`);
+
   // The human in the room is the host when --code was given; only self-hosted
   // runs may configure and start.
-  if (!arg('code', '')) {
-    bots[0].send({ t: 'config', mode: MODE, rounds: ROUNDS });
-    await new Promise((r) => setTimeout(r, 400));
-    bots[0].send({ t: 'start' });
+  if (!CODE_IN) {
+    if (hostInfo && hostInfo.you && hostInfo.you.isHost === false) {
+      console.log('aviso: o bot 0 não é o host desta sala — não vou configurar nem começar');
+    }
+    kids[0].send({ t: 'host-config', mode: MODE, rounds: ROUNDS });
+    await sleep(400);
+    kids[0].send({ t: 'host-start' });
   } else {
     console.log('aguardando o humano começar a partida…');
   }
 
-  const t0 = Date.now();
-  const deadline = t0 + 20_000 + ROUNDS * 70_000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 4000));
-    const el = ((Date.now() - t0) / 1000).toFixed(0);
-    process.stdout.write(
-      `\r  ${el}s · palpites ${stats.guesses} · aceitos ${stats.ok} · recusados ${stats.rejected} · resolveram ${stats.solved}   `,
-    );
+  const playTimer = setInterval(() => publish('jogando', code), REPORT_MS);
+  const budget = 20_000 + ROUNDS * (roundMs + 15_000);
+  const tEnd = Date.now() + budget;
+  while (Date.now() < tEnd) {
+    await sleep(500);
     // Self-hosted runs stop as soon as the room is done. When a human is in the
     // room (--code) the bots stay until the deadline: exiting early would yank
     // every opponent out from under them mid-round, which looked like a server
     // bug the first time it happened.
-    if (!arg('code', '') && stats.solved >= N * 0.9 && stats.guesses > N) break;
+    if (!CODE_IN && matchEnded) break;
+    if (!CODE_IN && live.size && aggregate().sockets === 0) { console.log('\ntodos os sockets caíram — encerrando'); break; }
   }
-  console.log('\n');
+  clearInterval(playTimer);
+  publish('colhendo', code);
 
-  const gaps = [];
-  for (let i = 1; i < stats.tickTimes.length; i++) gaps.push(stats.tickTimes[i] - stats.tickTimes[i - 1]);
-  const secs = (Date.now() - t0) / 1000;
+  // Collect the histograms, then report once.
+  for (const k of kids) k.send({ t: 'final' });
+  const waitUntil = Date.now() + 5000;
+  while (finals.size < kids.length && Date.now() < waitUntil) await sleep(100);
+  for (const k of kids) { try { k.kill(); } catch { /* already gone */ } }
 
-  console.log('── fan-out ─────────────────────────────────────────');
-  console.log(`  frames de tick medidos   : ${stats.frames} (em ${SAMPLE} sockets amostrados)`);
-  console.log(`  tamanho médio do frame   : ${stats.frames ? (stats.frameBytes / stats.frames).toFixed(0) : 0} B`);
-  console.log(`  maior frame              : ${stats.frameMax} B`);
-  console.log(`  intervalo entre ticks    : mediana ${pct(gaps, 50)} ms · p95 ${pct(gaps, 95)} ms`);
-  console.log(`  egresso estimado p/ sala : ${((stats.frameBytes / Math.max(1, stats.frames)) * N * (1000 / Math.max(1, pct(gaps, 50))) / 1024).toFixed(0)} KB/s`);
-  console.log('── latência do palpite ─────────────────────────────');
-  console.log(`  amostras                 : ${stats.latencies.length}`);
-  console.log(`  p50 ${pct(stats.latencies, 50)} ms · p95 ${pct(stats.latencies, 95)} ms · p99 ${pct(stats.latencies, 99)} ms · max ${Math.max(0, ...stats.latencies)} ms`);
-  console.log('── jogo ────────────────────────────────────────────');
-  console.log(`  conectados               : ${stats.connected}/${N} (falhas ${stats.failed})`);
-  console.log(`  palpites enviados        : ${stats.guesses} (${(stats.guesses / secs).toFixed(1)}/s)`);
-  console.log(`  aceitos ${stats.ok} · recusados ${stats.rejected}`);
-  console.log(`  bots que fecharam        : ${stats.solved}/${N}`);
-  console.log(`  tráfego total recebido   : ${(stats.inboundBytes / 1024 / 1024).toFixed(2)} MB em ${stats.inboundMsgs} mensagens`);
-
+  report(code, roundMs);
+  try { unlinkSync(STATUS_FILE); } catch { /* fine */ }
   process.exit(0);
-};
+}
 
-main().catch((e) => { console.error(e); process.exit(1); });
+function report(code, roundMs) {
+  const lat = new Hist(), rtt = new Hist(), hand = new Hist(), gap = new Hist();
+  for (const f of finals.values()) { lat.merge(f.lat); rtt.merge(f.rtt); hand.merge(f.hand); gap.merge(f.gap); }
+  const a = aggregate();
+  const secs = Math.max(1, (Date.now() - t0) / 1000);
+  const avgFrame = a.frames ? a.frameBytes / a.frames : 0;
+  const tickMed = gap.percentile(50);
+  const missing = kids.length - finals.size;
+
+  console.log('\n');
+  console.log('── fan-out ─────────────────────────────────────────');
+  console.log(`  frames de tick medidos   : ${a.frames} (em ~25 sockets amostrados)`);
+  console.log(`  tamanho médio do frame   : ${avgFrame.toFixed(0)} B`);
+  console.log(`  maior frame              : ${a.frameMax} B`);
+  console.log(`  intervalo entre ticks    : mediana ${fmtMs(tickMed)} ms · p95 ${fmtMs(gap.percentile(95))} ms`);
+  console.log(`  egresso estimado p/ sala : ${((avgFrame * a.peakSockets * (1000 / Math.max(1, tickMed))) / 1024).toFixed(0)} KB/s`);
+  console.log('── latência do palpite ─────────────────────────────');
+  console.log(`  amostras                 : ${lat.n}`);
+  console.log(`  p50 ${fmtMs(lat.percentile(50))} ms · p95 ${fmtMs(lat.percentile(95))} ms · p99 ${fmtMs(lat.percentile(99))} ms · max ${lat.hi} ms`);
+  console.log('── jogo ────────────────────────────────────────────');
+  console.log(`  conectados               : ${a.connected}/${N} (falhas ${a.failed})`);
+  console.log(`  pico de sockets vivos    : ${a.peakSockets} · vivos no fim ${a.sockets}`);
+  console.log(`  sockets derrubados       : ${a.closed}${Object.keys(a.closeCodes).length ? ` ${JSON.stringify(a.closeCodes)}` : ''}`);
+  console.log(`  palpites enviados        : ${a.guesses} (${(a.guesses / secs).toFixed(1)}/s)`);
+  console.log(`  aceitos ${a.ok} · recusados ${a.rejected}`);
+  console.log(`  rodadas encerradas       : ${a.roundsFinished} · fecharam tudo ${a.solves}`);
+  console.log(`  boards por rodada vistos : ${JSON.stringify(a.boardsSeen)}   (do frame roundStart, não do --mode)`);
+  console.log(`  tráfego total recebido   : ${fmtBytes(a.inboundBytes)} em ${a.inboundMsgs} mensagens`);
+  if (Object.keys(a.errors).length) console.log(`  erros                    : ${JSON.stringify(a.errors)}`);
+
+  console.log('── frota (por worker) ──────────────────────────────');
+  console.log('  id   sockets  fech   palpites   lag p50   lag p99   lag max      RSS');
+  const rows = [...live.values()].sort((x, y) => x.id - y.id);
+  for (const s of rows) {
+    console.log(
+      `  ${String(s.id).padEnd(3)}${String(s.sockets).padStart(8)}${String(s.closed).padStart(6)}` +
+      `${String(s.guesses).padStart(11)}${(s.lagP50.toFixed(1) + 'ms').padStart(10)}` +
+      `${(s.lagP99.toFixed(1) + 'ms').padStart(10)}${(s.lagMax.toFixed(0) + 'ms').padStart(10)}` +
+      `${fmtBytes(s.rss).padStart(10)}`,
+    );
+  }
+  if (missing > 0) console.log(`  (${missing} worker(s) não entregaram histograma final — números abaixo podem estar incompletos)`);
+  console.log(`  handshake                : p50 ${fmtMs(hand.percentile(50))} ms · p95 ${fmtMs(hand.percentile(95))} ms · max ${hand.hi} ms`);
+  console.log(`  RTT ping/pong            : amostras ${rtt.n} · p50 ${fmtMs(rtt.percentile(50))} ms · p95 ${fmtMs(rtt.percentile(95))} ms · max ${rtt.hi} ms`);
+  // Marginal, not total: at 50 sockets the total is ~95% Node baseline, and
+  // quoting that as "KB/socket" would put the capacity estimate off by 20x.
+  const marginal = Math.max(0, a.rss - a.rss0);
+  console.log(`  RSS somado dos workers   : ${fmtBytes(a.rss)} (base ${fmtBytes(a.rss0)} + ${fmtBytes(marginal)} de carga)`);
+  console.log(`  custo marginal do socket : ${a.peakSockets ? (marginal / a.peakSockets / 1024).toFixed(1) : 0} KB · projeção 10k = ${a.peakSockets ? fmtBytes((marginal / a.peakSockets) * 10000) : 'n/d'}`);
+
+  verdict({ a, lat, rtt, hand, gap, roundMs, code });
+}
+
+/**
+ * CLIENT or SERVER — the question a load test exists to answer.
+ *
+ * The discriminator is the worker event loop. Every latency in this report was
+ * stamped by a worker, so a worker that is itself behind reports a number that
+ * is partly its own. RTT is the cleanest probe of the far side: `ping`/`pong`
+ * does no game work, so what it measures is the Durable Object's queue, and
+ * subtracting our own lag from it leaves the server's share.
+ */
+function verdict({ a, lat, rtt, hand, gap, roundMs }) {
+  const clientLag = a.lagMax;                       // worst worker p99
+  const rttP95 = rtt.percentile(95);
+  const serverQueue = Math.max(0, rttP95 - clientLag);
+  const latP95 = lat.percentile(95);
+  const handP95 = hand.percentile(95);
+  const dropped = a.closed;
+  const dropRate = a.peakSockets ? dropped / a.peakSockets : 0;
+
+  const why = [];
+  let who = 'NENHUM DOS DOIS saturou';
+
+  if (dropRate >= 0.5) {
+    who = 'SERVIDOR';
+    why.push(`derrubou ${dropped} de ${a.peakSockets} sockets (${(dropRate * 100).toFixed(0)}%) — códigos ${JSON.stringify(a.closeCodes)}`);
+  } else if (clientLag >= 150 && clientLag >= latP95 * 0.5) {
+    who = 'CLIENTE (esta ferramenta)';
+    why.push(`event-loop lag p99 do pior worker ${clientLag.toFixed(0)} ms, contra p95 de palpite ${latP95} ms — a medição está sendo produzida pela própria fila do worker`);
+    why.push(`suba --workers (agora ${live.size}) ou baixe --n por worker`);
+  } else if (handP95 >= 1000 && clientLag < 150) {
+    who = 'SERVIDOR';
+    why.push(`handshake p95 ${handP95} ms com o cliente ocioso (lag p99 ${clientLag.toFixed(0)} ms) — a fila de accept do servidor é o gargalo, não a nossa`);
+  } else if (serverQueue >= 150) {
+    who = 'SERVIDOR';
+    why.push(`RTT ping/pong p95 ${rttP95} ms menos o nosso lag ${clientLag.toFixed(0)} ms deixa ${serverQueue.toFixed(0)} ms de fila no Durable Object`);
+  } else if (dropRate > 0.05) {
+    who = 'SERVIDOR (parcial)';
+    why.push(`derrubou ${dropped} sockets (${(dropRate * 100).toFixed(0)}%) — códigos ${JSON.stringify(a.closeCodes)}`);
+  } else {
+    why.push(`cliente ocioso (lag p99 ${clientLag.toFixed(0)} ms) e servidor respondendo (RTT p95 ${rttP95} ms, palpite p95 ${latP95} ms)`);
+    why.push('nenhum dos lados atingiu o limite nesta execução — suba --n');
+  }
+
+  // Tick drift is the fan-out's own health, independent of who is to blame.
+  const tickMed = gap.percentile(50);
+  const expect = a.peakSockets <= 400 ? 500 : a.peakSockets <= 1500 ? 750 : a.peakSockets <= 4000 ? 1000 : 1500;
+  const drift = tickMed - expect;
+
+  console.log('── veredito ────────────────────────────────────────');
+  console.log(`  GARGALO: ${who}`);
+  for (const w of why) console.log(`    · ${w}`);
+  console.log(`  cadência do tick         : medida ${fmtMs(tickMed)} ms · esperada ${expect} ms (tickMsFor(${a.peakSockets}))` +
+    `${gap.n ? ` · desvio ${drift >= 0 ? '+' : ''}${drift} ms` : ' · sem amostras'}`);
+  if (gap.n && drift > expect * 0.25) {
+    console.log('    · o tick está atrasando: a sala não termina um fan-out antes do próximo vencer');
+  }
+  if (a.pings && a.pongs < a.pings * 0.9) {
+    console.log(`    · ${a.pings - a.pongs} de ${a.pings} pings ficaram sem resposta — o servidor perdeu mensagens, não só atrasou`);
+  }
+  console.log(`  confiança                : ${lat.n} amostras de latência, ${rtt.n} de RTT, ${gap.n} de tick`);
+  if (lat.n < 100) console.log('    · poucas amostras: trate os percentis como indicativos, não como medida');
+}
+
+main().catch((e) => { console.error(e); for (const k of kids) { try { k.kill(); } catch {} } process.exit(1); });
