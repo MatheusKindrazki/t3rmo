@@ -616,17 +616,29 @@ export default function App() {
               tile={tile}
             />
           </div>
-          {st.finished && phase === 'playing' && (
-            // You solved fast and now the board just sits there — without this it
-            // reads as frozen. It is not: the room is still thinking, and this
-            // ticks down as they close.
-            <div className="wait-live" role="status">
-              <span className="wait-dot" aria-hidden />
-              {st.online - st.solvedCount > 0
-                ? <>você fechou · <b>{st.online - st.solvedCount}</b> ainda no jogo</>
-                : <>você fechou · fim da rodada chegando…</>}
-            </div>
-          )}
+          {st.finished && phase === 'playing' && (() => {
+            // You are done and the board just sits there — without this it reads
+            // as frozen. It is not: the room is still on the word, and the bar
+            // fills as they close, so it visibly moves. Copy is honest about the
+            // outcome — "fechou" only when you actually solved, never when the
+            // guesses simply ran out.
+            const didSolve = st.solved.length > 0 && st.solved.every(Boolean);
+            const rest = Math.max(0, st.online - st.solvedCount);
+            const pct = st.online > 0 ? Math.round((st.solvedCount / st.online) * 100) : 0;
+            return (
+              <div className="wait-live" role="status">
+                <div className="wait-row">
+                  {didSolve
+                    ? <span className="wait-ok">✓ você fechou em {st.guesses.length}</span>
+                    : <span className="wait-out">tentativas esgotadas</span>}
+                  <span className="wait-rest">
+                    {rest > 0 ? <><b>{rest}</b> ainda tentando</> : 'a rodada vai acabar…'}
+                  </span>
+                </div>
+                <div className="wait-bar" aria-hidden><span style={{ width: `${pct}%` }} /></div>
+              </div>
+            );
+          })()}
           <Keyboard
             states={ks}
             boards={cfg.boards}

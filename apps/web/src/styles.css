@@ -1250,20 +1250,20 @@ html:not([data-marks='on']) .ex-t[data-state]::after { display: none; }
 }
 .rankfull-me:hover { background: rgba(143,211,255,.16); }
 
-/* "It's not frozen" — live wait state after you finish while others play. */
+/* "It's not frozen": after you finish, an honest outcome + a bar that fills as
+   the room closes. On mobile (rails hidden) this is the only progress signal. */
 .wait-live {
-  display: flex; align-items: center; justify-content: center; gap: 8px;
-  margin: 8px auto 2px; padding: 8px 14px; max-width: 340px;
-  font-size: 13px; color: var(--chalk);
-  background: rgba(79,179,162,.10); border: 1px solid var(--edge); border-radius: 999px;
+  display: inline-flex; flex-direction: column; gap: 7px; align-items: center;
+  margin: 12px auto 4px; padding: 9px 16px 10px; max-width: 360px; width: max-content;
+  background: rgba(79,179,162,.08); border: 1px solid var(--edge); border-radius: 14px;
 }
-.wait-live b { color: var(--right-txt); font-weight: 700; }
-.wait-dot {
-  width: 8px; height: 8px; border-radius: 50%; background: var(--right-txt);
-  animation: wait-pulse 1.2s ease-in-out infinite;
-}
-@keyframes wait-pulse { 0%,100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.15); } }
-@media (prefers-reduced-motion: reduce) { .wait-dot { animation: none; } }
+.wait-row { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--chalk); white-space: nowrap; }
+.wait-ok { color: var(--right-txt); font-weight: 700; }
+.wait-out { color: var(--mute); font-weight: 600; }
+.wait-rest { color: var(--mute); }
+.wait-rest b { color: var(--right-txt); font-weight: 700; }
+.wait-bar { width: 100%; height: 3px; border-radius: 2px; background: rgba(255,255,255,.09); overflow: hidden; }
+.wait-bar span { display: block; height: 100%; background: var(--right-txt); border-radius: 2px; transition: width .6s var(--ease); }
 
 /* ---------------------------------------------------------------- lobby (pre-game) */
 .veil.lobby::before {
