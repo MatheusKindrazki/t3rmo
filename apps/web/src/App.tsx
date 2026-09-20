@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
   type Mode, type Tile, type RowWire, type FeedWire,
-  type RoomSnapshot, type ServerMessage, WORD_LENGTH, TOP_N,
+  type RoomSnapshot, type ServerMessage, type RoundScore, WORD_LENGTH, TOP_N,
 } from '@arena/core';
 import { RankFull } from './components/RankFull.tsx';
-import { RoomSocket, loadClientId, loadName, saveName, type ConnStatus } from './lib/net.ts';
+import { RoomSocket, loadClientId, loadName, saveName, saveRoomToken, loadRoomToken, type ConnStatus } from './lib/net.ts';
 import { keyStates, tilePx, rankFromCuts } from './lib/game.ts';
 import { Landing } from './components/Landing.tsx';
 import { Vitals } from './components/Vitals.tsx';
@@ -16,11 +16,11 @@ import { Keyboard } from './components/Keyboard.tsx';
 import { CountdownVeil, RoundEndVeil, MatchEndVeil, LobbyVeil, DeadRoomVeil, WaitVeil, LeaveVeil } from './components/Overlays.tsx';
 import { Rules } from './components/Rules.tsx';
 import { Progress } from './components/Progress.tsx';
-import { recordRound, recordMatch } from './lib/stats.ts';
+import { recordRound, recordMatch, recordTraining, claimReceipt } from './lib/stats.ts';
 
 interface RoundEnd {
   answers: string[];
-  you: { score: number; rank: number; solvedWords: number; guesses: number; roundScore: number } | null;
+  you: { score: number; rank: number; solvedWords: number; guesses: number; roundScore: number; breakdown?: RoundScore } | null;
   podium: RowWire[];
   round: number;
   rounds: number;
@@ -63,7 +63,7 @@ interface State {
   /** Ladder rows pulled on demand, keyed by rank — feeds both the neighbourhood and the full list. */
   pageRows: Record<number, RowWire>;
   roundEnd: RoundEnd | null;
-  matchEnd: { standings: RowWire[]; you: { rank: number; score: number } | null; answers: string[] } | null;
+  matchEnd: { standings: RowWire[]; you: { rank: number; score: number; breakdown?: RoundScore } | null; answers: string[] } | null;
   toast: { msg: string; id: number } | null;
 }
 
@@ -156,10 +156,11 @@ function reduce(s: State, a: Action): State {
           // you were in the middle of — the thing you least want to retype
           // under a clock. It is only cleared when the ROUND changed, where it
           // no longer belongs to anything.
-          const sameRound = s.room?.round === m.room.round && s.guesses.length === (b?.guesses.length ?? 0);
+          const sameRound = s.room?.matchId === m.room.matchId && s.room?.round === m.room.round && s.guesses.length === (b?.guesses.length ?? 0);
           return {
             ...s,
             room: m.room,
+            ...(m.room.phase === 'countdown' && m.room.round === 0 ? {roundEnd:null,matchEnd:null,pageRows:{}} : {}),
             online: m.room.online,
             guesses: b?.guesses ?? [],
             tiles: b?.tiles ?? Array.from({ length: boards }, () => []),
@@ -285,7 +286,6 @@ export default function App() {
   const [sheet, setSheet] = useState<null | 'rules' | 'progress'>(null);
   const [leaving, setLeaving] = useState(false);
   const [rankOpen, setRankOpen] = useState(false);
-  const recorded = useRef({ round: -1, match: -1 });
   const [vh, setVh] = useState(() => (typeof window === 'undefined' ? 900 : window.innerHeight));
   const [vw, setVw] = useState(() => (typeof window === 'undefined' ? 1440 : window.innerWidth));
   const sock = useRef<RoomSocket | null>(null);
@@ -299,7 +299,11 @@ export default function App() {
   const enter = useCallback((code: string, nick: string, isNew = false) => {
     sock.current?.close();
     const s = new RoomSocket(code, nick || 'anon', loadClientId(), isNew);
-    s.on((m) => dispatch({ k: 'msg', m }));
+    s.on((m) => {
+      if (m.t === 'error') setError(m.message);
+      if (m.t === 'welcome') setError(null);
+      dispatch({ k: 'msg', m });
+    });
     s.onStatus(setConn);
     s.connect();
     sock.current = s;
@@ -308,56 +312,33 @@ export default function App() {
     history.replaceState(null, '', url);
   }, []);
 
-  const create = useCallback(async (mode: Mode, rounds: number, pace: number) => {
+  // A fresh invite asks for a name. A reload with this tab's capability resumes.
+  useEffect(() => {
+    const code = new URLSearchParams(location.search).get('sala')?.toUpperCase();
+    if (code && loadRoomToken(code) && !sock.current) enter(code, loadName() || 'Jogador');
+  }, [enter]);
+
+  const create = useCallback(async (mode: Mode, rounds: number, pace: number, training = false) => {
+    if (busy) return;
     setBusy(true); setError(null);
     try {
-      const res = await fetch('/api/rooms', { method: 'POST' });
-      if (!res.ok) throw new Error(`servidor respondeu ${res.status}`);
-      const { code } = (await res.json()) as { code: string };
-      saveName(name);
-      enter(code, name, true);
-      // Queued, not timed. The socket buffers this until it is open and the
-      // join has gone out — a 250ms timer lost the host's chosen format every
-      // time the connection took longer than that, which over the real edge is
-      // often.
-      sock.current?.send({ t: 'config', mode, rounds, pace });
-    } catch (e) {
-      setError(`não consegui abrir a sala: ${(e as Error).message}`);
-    } finally {
-      setBusy(false);
-    }
-  }, [name, enter]);
+      const res = await fetch('/api/rooms', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, rounds, pace, training }), signal: AbortSignal.timeout(10000) });
+      if (!res.ok) throw new Error(res.status === 429 ? 'Muitas salas criadas. Aguarde um minuto e tente novamente.' : 'Não foi possível criar a sala. Tente novamente.');
+      const { code, hostToken } = await res.json() as { code: string; hostToken: string };
+      saveRoomToken(code, hostToken);
+      const nick = name.trim() || `Jogador${Math.floor(Math.random() * 900 + 100)}`;
+      saveName(nick); setName(nick);
+      enter(code, nick, true);
+    } catch (e) { setError((e as Error).name === 'TimeoutError' ? 'A conexão demorou. Tente novamente.' : (e as Error).message); }
+    finally { setBusy(false); }
+  }, [name, enter, busy]);
 
   const join = useCallback(async (code: string) => {
-    const up = code.toUpperCase();
-    saveName(name);
-    setError(null);
-    setBusy(true);
-    try {
-      // Ask before connecting. Connecting first would CREATE the room, which is
-      // exactly the bug: a typo made you the host of an empty lobby identical
-      // to the one you meant to join.
-      const res = await fetch(`/api/rooms/${encodeURIComponent(up)}/info`);
-      if (res.ok) {
-        const info = (await res.json()) as { created?: boolean };
-        if (info.created === false) {
-          setError(`a sala ${up} não existe — confira o código`);
-          return;
-        }
-      }
-    } catch {
-      // A failed check is not proof the room is missing; let the socket try.
-    } finally {
-      setBusy(false);
-    }
-    enter(up, name);
-  }, [name, enter]);
-
-  // Deep link: /?sala=A7X drops you straight into the room.
-  useEffect(() => {
-    const code = new URLSearchParams(location.search).get('sala');
-    if (code && !sock.current) enter(code.toUpperCase(), loadName() || 'anon');
-  }, [enter]);
+    if (busy) return;
+    const nick = name.trim() || `Jogador${Math.floor(Math.random() * 900 + 100)}`;
+    saveName(nick); setName(nick); setError(null);
+    enter(code.toUpperCase(), nick);
+  }, [name, enter, busy]);
 
   /** The app had no exit at all: `st.room` was never set back to null, so a
    *  dead room could only be escaped by editing the URL. */
@@ -386,7 +367,7 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', h);
   }, [st.room?.phase]);
 
-  useEffect(() => () => sock.current?.close(), []);
+  useEffect(() => () => { sock.current?.close(); sock.current = null; }, []);
   useEffect(() => {
     const onResize = () => { setVh(window.innerHeight); setVw(window.innerWidth); };
     window.addEventListener('resize', onResize);
@@ -412,7 +393,7 @@ export default function App() {
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || document.querySelector("dialog[open]") || leaving || sheet || sheet2 || rankOpen) return;
       const el = e.target as HTMLElement | null;
 
       // Text entry owns every key: never steal from a field.
@@ -442,7 +423,7 @@ export default function App() {
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [submit]);
+  }, [submit, leaving, sheet, sheet2, rankOpen]);
 
   /**
    * Personal record is written once per round, guarded by the round index.
@@ -451,9 +432,8 @@ export default function App() {
    */
   useEffect(() => {
     const re = st.roundEnd;
-    if (!re || !re.you || !st.room) return;
-    if (recorded.current.round === re.round) return;
-    recorded.current.round = re.round;
+    if (!re || !re.you || !st.room || st.room.training) return;
+    if (!claimReceipt(`${st.room.code}:${st.room.matchId}:round:${re.round}`)) return;
     recordRound(st.room.mode, {
       solvedWords: re.you.solvedWords,
       boards: st.room.cfg.b,
@@ -465,9 +445,11 @@ export default function App() {
   useEffect(() => {
     const me = st.matchEnd;
     if (!me || !me.you || !st.room) return;
-    const stamp = st.room.round * 1000 + me.you.rank;
-    if (recorded.current.match === stamp) return;
-    recorded.current.match = stamp;
+    if (!claimReceipt(`${st.room.code}:${st.room.matchId}:match`)) return;
+    if (st.room.training) { recordTraining(st.solved.every(Boolean), st.guesses.length); return; }
+    if (claimReceipt(`${st.room.code}:${st.room.matchId}:round:${st.room.round}`)) {
+      recordRound(st.room.mode, { solvedWords: st.solved.filter(Boolean).length, boards: st.room.cfg.b, guesses: st.guesses.length, rank: me.you.rank });
+    }
     recordMatch(st.room.mode, me.you.rank);
   }, [st.matchEnd, st.room?.mode]);
 
@@ -557,7 +539,7 @@ export default function App() {
       <>
         <Landing
           name={name} setName={setName} onCreate={create} onJoin={join}
-          busy={busy || conn === 'connecting'} error={error}
+          busy={busy || conn === 'connecting'} error={error ?? st.toast?.msg ?? null}
           onRules={() => setSheet('rules')} onProgress={() => setSheet('progress')}
         />
         {conn === 'connecting' && <div className="toast">CONECTANDO…</div>}
@@ -578,7 +560,8 @@ export default function App() {
   // without ever needing the whole id.
   const isHost = st.room.hostPrefix !== null && st.room.hostPrefix === st.you?.id.slice(0, 8);
   return (
-    <div className="shell">
+    <div className="shell" data-training={st.room.training || undefined}>
+      <span className="sr" role="status">{phase === "playing" ? "A rodada começou" : phase === "finished" ? "Partida concluída" : phase === "lobby" ? "Sala de espera" : phase === "intermission" ? "Rodada concluída" : "Preparando rodada"}</span>
       <TopBar
         room={st.room} online={st.online} myRank={myRank} prevRank={st.prevRank} approx={approx} serverNow={serverNow}
         onRules={() => setSheet('rules')} onProgress={() => setSheet('progress')}
@@ -653,6 +636,10 @@ export default function App() {
               isHost={isHost}
               code={st.room.code}
               feed={st.feed}
+              players={st.top}
+              hostPrefix={st.room.hostPrefix}
+              onOpenPlayers={() => setRankOpen(true)}
+              onKick={(playerId) => sock.current?.send({ t: 'kick', playerId, ban: true })}
               mode={st.room.mode}
               rounds={st.room.rounds}
               format={st.room.cfg.l}
@@ -665,6 +652,9 @@ export default function App() {
             : <WaitVeil deadline={st.room.deadline} serverNow={serverNow} />)}
           {phase === 'finished' && (st.matchEnd
             ? <MatchEndVeil
+                training={st.room.training}
+                guesses={st.guesses.length}
+                solved={st.solved.every(Boolean)}
                 standings={st.matchEnd.standings}
                 you={st.matchEnd.you}
                 answers={st.matchEnd.answers}
@@ -694,6 +684,7 @@ export default function App() {
             myRank={myRank}
             myId={st.you?.id ?? ''}
             cuts={st.cuts}
+            onKick={isHost ? (playerId) => sock.current?.send({t:'kick',playerId,ban:true}) : undefined}
             requestPage={requestPage}
             onClose={() => setRankOpen(false)}
           />
@@ -712,8 +703,9 @@ export default function App() {
 
       {st.toast && <div className="toast" data-tone="bad" key={st.toast.id} role="status">{st.toast.msg}</div>}
       {conn !== 'open' && conn !== 'idle' && conn !== 'taken' && (
-        <div className="toast" data-tone="bad" role="status">
+        <div className="toast connection-toast" data-tone="bad" role="status">
           {conn === 'connecting' ? 'CONECTANDO…' : 'SEM CONEXÃO'}
+          {conn === 'closed' && <button className="link" onClick={() => sock.current?.reclaim()}>Reconectar</button>}
         </div>
       )}
       {conn === 'taken' && (

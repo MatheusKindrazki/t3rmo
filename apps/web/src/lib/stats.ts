@@ -100,3 +100,27 @@ export function recordMatch(mode: Mode, rank: number): AllStats {
 export const avgGuesses = (m: ModeStats) => (m.solved ? m.guessSum / m.solved : 0);
 export const avgRank = (m: ModeStats) => (m.rankCount ? m.rankSum / m.rankCount : 0);
 export const winRate = (m: ModeStats) => (m.rounds ? (m.solved / m.rounds) * 100 : 0);
+
+/** Solo practice is deliberately stored outside competitive statistics. */
+export function loadTrainingStats(): { sessions: number; solved: number; guesses: number } {
+  try { return JSON.parse(localStorage.getItem('arena.training.v1') ?? 'null') ?? { sessions: 0, solved: 0, guesses: 0 }; }
+  catch { return { sessions: 0, solved: 0, guesses: 0 }; }
+}
+export function recordTraining(solved: boolean, guesses: number): void {
+  const previous = loadTrainingStats();
+  try { localStorage.setItem('arena.training.v1', JSON.stringify({ sessions: previous.sessions + 1, solved: previous.solved + Number(solved), guesses: previous.guesses + guesses })); } catch { /* private mode */ }
+}
+
+
+const seenReceipts = new Set<string>();
+/** Receipt IDs survive reloads, but are bounded; no personal data or tokens. */
+export function claimReceipt(id: string): boolean {
+  if (seenReceipts.has(id)) return false;
+  let previous: string[] = [];
+  try { const parsed: unknown = JSON.parse(localStorage.getItem('arena.receipts.v1') ?? '[]'); if(Array.isArray(parsed)) previous=parsed.filter((x): x is string=>typeof x==='string'); } catch { /* no persistent storage */ }
+  if(previous.includes(id)) {seenReceipts.add(id);return false;}
+  seenReceipts.add(id);
+  if(seenReceipts.size>1024) seenReceipts.delete(seenReceipts.values().next().value!);
+  try {localStorage.setItem('arena.receipts.v1',JSON.stringify([...previous.slice(-1023),id]));} catch { /* in-memory dedupe */ }
+  return true;
+}

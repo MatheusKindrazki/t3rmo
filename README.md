@@ -4,7 +4,7 @@
 
 <p align="center">
   Termo competitivo em tempo real. Uma sala, <b>a mesma palavra</b>, o mesmo
-  segundo, centenas de pessoas. Quem resolve em <b>menos tentativas</b> fica na frente.
+  segundo, centenas de pessoas. Acertos, tentativas, velocidade e sequência compõem a pontuação.
 </p>
 
 <p align="center">
@@ -109,29 +109,27 @@ trip, então validar no cliente não pouparia nada além do caminho de erro.
 Uma sala de teste com gente dentro, em um comando:
 
 ```bash
-pnpm arena                                   # 400 bots · MISTO · 4 rodadas · produção
-pnpm arena --bots 50 --mode termo            # rápida
-pnpm arena --bots 1000 --mode quarteto --rounds 2
+pnpm arena                                   # 20 bots · MISTO · 4 rodadas · produção
+pnpm arena --bots 20 --mode termo            # rápida
+pnpm arena --bots 40 --mode quarteto --rounds 2
 pnpm arena:local                             # contra o dev server
 pnpm arena --no-wait                         # não espera humano entrar
 pnpm arena --start-in 30                     # segundos de folga depois que você entra
-pnpm arena --bots 10000 --start-at 9500      # só começa quando 9500 conectarem (medição de carga)
+pnpm arena --bots 400 --start-at 9500      # só começa quando 9500 conectarem (medição de carga)
 ```
 
 Ele imprime o link e **segura a frota até você aparecer**, porque duas coisas
 tornam isso manualmente chato e fácil de errar:
 
-1. Uma sala só é **real** quando o socket que a abre manda `?new=1`. Sem isso o
-   servidor a trata como sala-fantasma e a página de entrada recusa — a defesa
-   contra código digitado errado dispara no seu próprio teste.
-2. O servidor **começa sozinho 30 s depois do segundo jogador**. Rampando 400
-   bots, a partida já está rodando antes de você abrir o link. O `arena` consulta
-   `/info` até um humano chegar, em vez de chutar um atraso.
+1. A sala é reservada no servidor via POST, que devolve uma credencial privada para o anfitrião. `new=1` não cria salas. Os clientes de teste enviam Origin e protocolo v2.
+2. Salas de amigos começam apenas por comando do anfitrião. Treinos solo começam após o ingresso autenticado.
+
+Os limites públicos agora também valem para as ferramentas: até 48 bots por execução/origem e 64 sockets por IP em uma sala. Medições maiores exigem uma política de staging separada e autorizada; não remova os limites de produção para obter números maiores.
 
 Carga pura, sem humano:
 
 ```bash
-node tools/loadtest.mjs --n 3000 --rounds 1          # local
+node tools/loadtest.mjs --n 20 --rounds 1          # local
 node tools/fleetwatch.mjs                            # status ao vivo, outro terminal
 ```
 
@@ -197,34 +195,28 @@ o apex meio-ligado respondendo 522.
   cenário do streamer, e é a próxima frente.
 - **Reconexão preserva o jogo — inclusive através de um deploy.** Um celular
   que bloqueia, troca de rede ou vai para segundo plano cai e volta com os
-  palpites intactos. O estado é gravado em storage por `clientId` **a cada
+  palpites intactos. O estado é gravado em storage por credencial de sessão **a cada
   palpite** (write-through), não só quando o socket cai: um deploy reinicia o
   Durable Object sem disparar `webSocketClose`, então a única coisa que
   sobrevive a um release é uma escrita feita durante o jogo. `matchId` garante
   que um registro de uma partida anterior não devolva placar velho numa nova.
-  A janela em memória segura 120 s; a durável, até a próxima partida.
+  A janela em memória segura 120 s; a durável, até a próxima partida ou expiração da sala em 24 horas.
 
-## Endurecimento contra abuso
+## Security and experience update (protocol v2)
 
-O cenário "streamer põe o código no ar para milhares de espectadores" trouxe uma
-auditoria adversarial. O que já está no ar:
+The current source reserves rooms behind the POST rate limiter, authenticates host/reconnect authority with a server-issued per-room capability, and never trusts a caller-supplied clientId. Capabilities are stored hashed on the server and in per-tab sessionStorage on the client. The public code remains an address, not a credential.
 
-- **Roubo de sala fechado.** O id do host não é mais transmitido inteiro (só um
-  prefixo de 8 chars), e um `join` com o id do host vivo é recusado — antes, um
-  espectador lia o id no fio e derrubava o streamer com uma mensagem.
-- **Criação com limite.** `POST /api/rooms` tem rate limit por IP, e a própria
-  borda da Cloudflare corta rajadas do mesmo endereço.
-- **Teto de sala** (`ROOM_MAX`), contado por socket antes do accept, recusa com
-  503 quando cheia em vez de degradar em silêncio.
-- **`page` defangido**, autostart desligado em sala grande, `broadcastState`
-  serializado uma vez, sockets sem `join` varridos, e os handlers de runtime
-  em `try/catch` para um erro não derrubar a sala inteira.
+- Per-IP creation/entry rate limits; 64 concurrent sockets per source IP per room; 1500 room cap unchanged.
+- Every command has a 2 KiB size limit, schema validation and a hibernation-preserved 60-message/10-second socket budget. Normal guesses/pages retain their action-specific limits.
+- Same-origin browser handshake required. Automated clients explicitly send Origin; this is a browser-origin control, not a replacement for capability authorization.
+- Host has a 30-second absence grace before a connected participant succeeds them. A never-connected creator also gets a finite grace.
+- Host can revoke a participant session from lobby or the paginated ranking during play. A fresh anonymous browser can still return: this is session removal, not proof of a permanent human ban.
+- Rooms expire after 24 hours, identities are bounded to 6000 per room lifetime, and server exceptions are not returned verbatim.
+- Phase receipts survive reconnect; stats deduplicate by room/match/round. New matches use fresh seeds; training is stored separately from competitive stats.
+- Static/API responses have tested CSP, no-referrer, nosniff, frame restrictions and HSTS without includeSubDomains/preload.
 
-**Ainda aberto** (rastreado, não feito): sharding para 10k jogando de verdade;
-normalização de nome contra quem se passa pelo streamer; moderação (kick/ban);
-e um `1006` que o dev server local reproduz sob tráfego longo, não diagnosticado.
+Read [the implementation receipt and migration plan](docs/lobby-security-delivery.md) before release. Protocol v1 rooms are explicitly retired rather than allowing insecure legacy identity adoption. This source change has not been deployed by this task.
 
 ## Licença
 
 MIT — veja [LICENSE](LICENSE).
-- **Não existe moderação.** Sem kick, sem ban, sem report, ao vivo.

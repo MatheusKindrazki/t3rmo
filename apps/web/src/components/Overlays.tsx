@@ -1,7 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Confetti } from './Confetti.tsx';
-import type { RowWire, FeedWire } from '@arena/core';
+import { ShareAction } from './ShareAction.tsx';
+import { Modal } from './Modal.tsx';
+import type { RowWire, FeedWire, RoundScore } from '@arena/core';
 import { fmtInt } from '../lib/game.ts';
+
+function ScoreDetail({ score }: { score?: RoundScore }) {
+  if (!score) return null;
+  return <><p className="hint">Pontos da última rodada: {fmtInt(score.total)}</p><dl className="score-breakdown">{([['Acertos', score.words], ['Tentativas', score.attempts], ['Velocidade', score.speed], ['Sequência', score.streak], ['Bônus perfeito', score.perfect]] as const).map(([label, value]) => <div key={label} style={{ display: 'contents' }}><dt>{label}</dt><dd>{fmtInt(value)}</dd></div>)}</dl></>;
+}
 
 export function CountdownVeil({ deadline, serverNow }: { deadline: number; serverNow: () => number }) {
   const [n, setN] = useState(() => Math.ceil((deadline - serverNow()) / 1000));
@@ -24,7 +31,7 @@ export function RoundEndVeil({
   answers, you, podium, round, rounds,
 }: {
   answers: string[];
-  you: { score: number; rank: number; solvedWords: number; guesses: number; roundScore: number } | null;
+  you: { score: number; rank: number; solvedWords: number; guesses: number; roundScore: number; breakdown?: RoundScore } | null;
   podium: RowWire[];
   round: number;
   rounds: number;
@@ -54,6 +61,7 @@ export function RoundEndVeil({
           </div>
         )}
 
+        <ScoreDetail score={you?.breakdown} />
         <div className="pod">
           {podium.map(([rank, id, name, score, guesses]) => (
             <div className="pod-r" key={id} data-p={rank}>
@@ -70,23 +78,24 @@ export function RoundEndVeil({
 }
 
 export function MatchEndVeil({
-  standings, you, answers, onAgain, onLeave, isHost,
+  standings, you, answers, onAgain, onLeave, isHost, training = false, guesses = 0, solved = false,
 }: {
   standings: RowWire[];
-  you: { rank: number; score: number } | null;
+  you: { rank: number; score: number; breakdown?: RoundScore } | null;
+  training?: boolean; guesses?: number; solved?: boolean;
   /** The final round's words — nothing else ever reveals them. */
   answers: string[];
   onAgain: () => void;
   onLeave: () => void;
   isHost: boolean;
 }) {
-  const podium = standings.slice(0, 3);
+  const podium = training ? [] : standings.slice(0, 3);
   const onPodium = you !== null && you.rank > 0 && you.rank <= 3;
   return (
     <div className="veil" role="status">
       {podium.length > 0 && <Confetti />}
       <div className="veil-box">
-        <div className="kicker">{onPodium ? 'você subiu no pódio' : 'partida encerrada'}</div>
+        <div className="kicker">{training ? 'Treino concluído' : onPodium ? 'você subiu no pódio' : 'partida encerrada'}</div>
 
         {/* The last round's answer used to die unseen: endRound flips the phase
             to 'finished' before the reveal renders, so the most satisfying beat
@@ -112,13 +121,16 @@ export function MatchEndVeil({
           ))}
         </div>
 
-        {you && !onPodium && (
+        {training && <p>{solved ? `Você acertou em ${guesses} tentativas.` : `Você usou ${guesses} tentativas. Vale treinar de novo!`}</p>}
+        <ScoreDetail score={you?.breakdown} />
+        {you && !training && <p className="hint">Total da partida: {fmtInt(you.score)} pontos</p>}
+        {you && !training && !onPodium && (
           <div className="hint" style={{ marginTop: 12 }}>
             você terminou em <b style={{ color: 'var(--you)' }}>#{fmtInt(you.rank)}</b> com {fmtInt(you.score)} pontos
           </div>
         )}
 
-        {standings.length > 3 && (
+        {!training && standings.length > 3 && (
           <div className="pod" style={{ maxHeight: 190, overflowY: 'auto', marginTop: 12 }}>
             {standings.slice(3, 15).map(([rank, id, name, score, guesses, , mine]) => (
               <div className="pod-r" key={id} style={mine === 1 ? { background: 'rgba(143,211,255,.12)' } : undefined}>
@@ -134,9 +146,12 @@ export function MatchEndVeil({
         {/* Everyone gets a way out to the home screen — the non-host used to be
             stranded on "aguardando…" with no exit at all. The host also gets
             to restart the match in place. */}
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 18, flexWrap: 'wrap', position: 'relative', zIndex: 2 }}>
-          {isHost && <button className="btn" onClick={onAgain}>jogar de novo</button>}
-          <button className="btn" data-variant="ghost" onClick={onLeave}>voltar ao início</button>
+        <div className="result-actions">
+        <div className="result-actions-primary">
+          {isHost && <button className="btn" onClick={onAgain}>{training ? 'Treinar de novo' : 'Jogar de novo'}</button>}
+          <button className="btn" data-variant="ghost" onClick={onLeave}>{training ? 'Chamar amigos para jogar' : 'Voltar ao início'}</button>
+        </div>
+        <div className="result-actions-share"><ShareAction label="Compartilhar resultado" text={training ? `Treinei no T3RMO: ${guesses} tentativas. Bora jogar juntos? https://t3rmo.com/` : `Joguei T3RMO com amigos${you ? `: posição ${you.rank}, ${you.score} pontos` : ''}. Bora jogar? https://t3rmo.com/`} /></div>
         </div>
         {!isHost && (
           <div className="hint" style={{ marginTop: 12 }}>quem criou a sala pode começar outra partida</div>
@@ -183,8 +198,9 @@ export function WaitVeil({ deadline, serverNow }: { deadline: number; serverNow:
 }
 
 export function LobbyVeil({
-  online, isHost, onStart, code, feed = [], mode = 'termo', rounds = 5, format = 'TERMO',
+  online, isHost, onStart, code, feed = [], mode = 'termo', rounds = 3, format = 'TERMO', players = [], hostPrefix, onKick, onOpenPlayers,
 }: {
+  players?: RowWire[]; hostPrefix?: string | null; onKick?: (id: string) => void; onOpenPlayers: () => void;
   online: number;
   isHost: boolean;
   onStart: () => void;
@@ -195,16 +211,10 @@ export function LobbyVeil({
   /** Label of the round about to play — 'TERMO' … 'QUARTETO', or 'MISTO'. */
   format?: string;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [kick, setKick] = useState<RowWire | null>(null);
   const link = `${location.origin}/?sala=${code}`;
   // Newest arrivals first — the lobby's proof of life while people trickle in.
   const arrivals = feed.filter((f) => f[0] === 'join').slice(-4).reverse();
-  const copy = () => {
-    navigator.clipboard?.writeText(link).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
-    }).catch(() => undefined);
-  };
   const modeLabel = mode === 'misto' ? 'MISTO' : format;
   return (
     <div className="veil lobby">
@@ -221,7 +231,7 @@ export function LobbyVeil({
         {online <= 1 ? (
           <div className="lobby-empty">
             <span className="lobby-dot" aria-hidden />
-            esperando jogadores — mande o convite
+            A sala está pronta. Mande o convite ou comece sozinho.
           </div>
         ) : (
           <>
@@ -244,18 +254,14 @@ export function LobbyVeil({
 
         <div className="lobby-cta">
           {isHost && <button className="btn" onClick={onStart}>COMEÇAR AGORA</button>}
-          <button className="btn" data-variant={isHost ? 'ghost' : undefined} onClick={copy}>
-            {copied ? '✓ CONVITE COPIADO' : 'COPIAR CONVITE'}
-          </button>
+          <ShareAction label="Copiar convite" native={false} text={link} />
+          <ShareAction label="Compartilhar convite" text={link} />
         </div>
 
-        <div className="lobby-note">
-          {isHost
-            ? (online >= 2 && online <= 40
-                ? 'começa sozinho em 30s — ou comece quando quiser'
-                : 'comece quando a sala estiver cheia o bastante')
-            : 'quem abriu a sala começa a partida'}
-        </div>
+        <div className="lobby-people" aria-label="Participantes">{players.slice(0, 20).map((row) => <div className="lobby-person" key={row[1]}><span>{row[2]} {row[1] === hostPrefix ? '· anfitrião' : ''}</span>{isHost && row[1] !== hostPrefix && <button className="link" onClick={() => setKick(row)}>Remover</button>}</div>)}</div>
+        <button className="link" onClick={onOpenPlayers}>Ver todos os participantes · {online}</button>
+        <div className="lobby-note">{isHost ? 'Comece quando seus amigos estiverem prontos.' : 'Esperando o anfitrião começar.'}</div>
+        {kick && <Modal title={`Remover ${kick[2]}?`} onClose={() => setKick(null)}><p>Remove esta sessão e impede que o mesmo acesso volte à sala. Não bloqueia a pessoa em outros dispositivos.</p><button className="btn" onClick={() => { onKick?.(kick[1]); setKick(null); }}>Remover da sala</button></Modal>}
       </div>
     </div>
   );
@@ -291,14 +297,13 @@ export function LeaveVeil({
   }, [onCancel]);
 
   return (
-    <div className="veil" role="alertdialog" aria-modal="true" aria-label="sair da sala">
+    <Modal title="Sair da sala?" onClose={onCancel}>
       <div className="veil-box">
         <div className="kicker">{live ? `rodada ${round} de ${rounds} em andamento` : 'sala'}</div>
         <div className="vtitle">Sair da sala?</div>
         <p className="hint" style={{ marginTop: 12, maxWidth: 380, marginInline: 'auto' }}>
           {live
-            ? <>Você perde a posição {rank > 0 ? <b style={{ color: 'var(--you)' }}>#{rank}</b> : 'que tem agora'} e os
-               pontos já somados nesta partida. A sala continua sem você.</>
+            ? <>A sala continua sem você. Seu acesso pode recuperar a partida neste navegador enquanto a sessão estiver disponível.</>
             : <>A partida ainda não começou, então não há nada a perder — você pode voltar pelo mesmo código.</>}
         </p>
         <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 22, flexWrap: 'wrap' }}>
@@ -306,6 +311,6 @@ export function LeaveVeil({
           <button className="btn" data-variant="danger" onClick={onConfirm}>sair mesmo assim</button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

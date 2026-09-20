@@ -1,3 +1,4 @@
+import { ShareAction } from './ShareAction.tsx';
 import { useEffect, useState } from 'react';
 import type { RoomSnapshot } from '@arena/core';
 import { fmtClock, fmtInt } from '../lib/game.ts';
@@ -42,23 +43,16 @@ export function TopBar({
   onProgress: () => void;
   onLeave: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
+
   const moved = prevRank > 0 && myRank > 0 ? prevRank - myRank : 0;
   const showClock = room.deadline > 0 && room.phase !== 'finished' && room.phase !== 'lobby';
 
-  const invite = () => {
-    navigator.clipboard?.writeText(`${location.origin}/?sala=${room.code}`)
-      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1600); })
-      .catch(() => undefined);
-  };
 
   return (
     <header className="hd">
       <div className="hd-l">
-        <span className="mark">T<em>3</em>RMO</span>
-        <button className="code" onClick={invite} title="copiar convite da sala">
-          {copied ? 'link copiado' : room.code}
-        </button>
+        <span className="brand-stack"><span className="mark">T<em>3</em>RMO</span>{room.training && <span className="training-badge">Treino solo</span>}</span>
+        {!room.training && <details className="header-invite"><summary className="code">{room.code}</summary><div><ShareAction text={`${location.origin}/?sala=${room.code}`} label="Copiar convite" native={false} /></div></details>}
         <span className="hd-round">{room.round || 1}<i>/{room.rounds}</i></span>
         {/* In MISTO the format changes every round, so the rung has to be on
             screen — otherwise the player discovers they are in QUARTETO by
@@ -73,7 +67,7 @@ export function TopBar({
           <b>{fmtInt(online)}</b>
           <i>jogando</i>
         </div>
-        <div className="stat" data-tone="you">
+        {!room.training && <div className="stat" data-tone="you">
           <b>
             {myRank > 0 ? `${approx ? '~' : ''}${fmtInt(myRank)}` : '—'}
             {/* A table that only says where you ARE hides the thing actually
@@ -85,7 +79,7 @@ export function TopBar({
             )}
           </b>
           <i>sua posição</i>
-        </div>
+        </div>}
         {/* Two buttons that each do one nameable thing, instead of one that
             hides both behind a shrug. */}
         <div className="hd-icons">

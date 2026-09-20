@@ -1,23 +1,15 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const close = useRef(onClose); close.current = onClose;
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
-    // Capture phase: the game listens for every keystroke on window, and without
-    // this an Escape would close the modal AND be read as gameplay input.
-    window.addEventListener('keydown', h, true);
-    return () => window.removeEventListener('keydown', h, true);
-  }, [onClose]);
-
-  return (
-    <div className="mdl-bg" onClick={onClose} role="dialog" aria-modal="true" aria-label={title}>
-      <div className="mdl" onClick={(e) => e.stopPropagation()}>
-        <div className="mdl-hd">
-          <span className="mdl-t">{title}</span>
-          <button className="mdl-x" onClick={onClose} aria-label="fechar">✕</button>
-        </div>
-        <div className="mdl-b">{children}</div>
-      </div>
-    </div>
-  );
+    const previous = document.activeElement as HTMLElement | null;
+    const node = dialog.current!;
+    node.showModal();
+    return () => { node.close(); previous?.focus(); };
+  }, []);
+  return <dialog ref={dialog} className="mdl native-modal" aria-label={title} onCancel={(e) => { e.preventDefault(); close.current(); }} onKeyDown={(e) => e.stopPropagation()} onClick={(e) => { if (e.target === dialog.current) close.current(); }}>
+    <div className="mdl-inner"><div className="mdl-hd"><span className="mdl-t">{title}</span><button className="mdl-x" onClick={onClose} aria-label="fechar">✕</button></div><div className="mdl-b">{children}</div></div>
+  </dialog>;
 }

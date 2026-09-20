@@ -4,12 +4,13 @@ import {
   scoreRound, compareStandings, assertScoringBounds, type Standing,
   TICK_MS, tickMsFor, EXACT_RANK_LIMIT, CUT_RANKS, SPY_N,
   HEARTBEAT_MS, GUESS_COOLDOWN_MS, TOP_N, PAGE_MAX, PROTOCOL_VERSION,
-  ROOM_MAX, JOIN_GRACE_MS, PAGE_COOLDOWN_MS, AUTOSTART_MAX_PLAYERS, LIMBO_MS, LIMBO_MAX,
+  ROOM_MAX, JOIN_GRACE_MS, PAGE_COOLDOWN_MS, LIMBO_MS, LIMBO_MAX,
   PACE_MIN, PACE_MAX,
   encodeTickShared, spliceMe,
   type ClientMessage, type ServerMessage, type Phase, type RoomSnapshot,
   type RowWire, type FeedWire,
 } from '@arena/core';
+import { ROOM_TTL_MS, HOST_GRACE_MS, PER_IP_SOCKETS, ROOM_IDENTITIES_MAX, consumeBudget, parseMessage, roomConfig, newToken, tokenHash, type Capability, type Budget } from './security.ts';
 import { isValidGuess, drawAnswers } from '@arena/core/dict';
 
 // Loud at isolate start rather than silently mis-ranking a live room. Over
@@ -19,8 +20,6 @@ for (const cfg of ROUND_CONFIGS) assertScoringBounds(cfg);
 
 const COUNTDOWN_MS = 5_000;
 const INTERMISSION_MS = 8_000;
-/** With two or more players and an idle host, the room starts itself. */
-const AUTOSTART_MS = 30_000;
 const DEFAULT_ROUNDS = 5;
 const MAX_NAME = 16;
 
@@ -39,6 +38,8 @@ const MAX_NAME = 16;
  * in QUARTETO (9 guesses x 5 chars).
  */
 interface Attached {
+  capabilityHash?: string;
+  breakdown?: ReturnType<typeof scoreRound>;
   id: string;
   name: string;
   /** Normalized guesses submitted this round. */
@@ -71,6 +72,11 @@ interface Attached {
 }
 
 interface Persisted {
+  securityVersion?: number;
+  expiresAt?: number;
+  hostAwayAt?: number;
+  identityCount?: number;
+  training?: boolean;
   code: string;
   seed: string;
   mode: Mode;
@@ -143,8 +149,13 @@ export class Room implements DurableObject {
       const a = ws.deserializeAttachment() as (Attached | { acceptedAt: number }) | null;
       // A socket that connected but never sent `join` carries only {acceptedAt}
       // and is not a player — loading it as one would seat a ghost with no id.
-      if (a && 'id' in a) this.cache.set(ws, a);
+      if (this.meta.securityVersion !== 2) { ws.close(4002, 'version'); continue; }
+      if (a && 'id' in a) {
+        const {budget: _budget, ip: _ip, acceptedAt: _acceptedAt, ...player} = a as Attached & {budget?:Budget;ip?:string;acceptedAt?:number};
+        this.cache.set(ws,player);
+      }
     }
+    if (this.meta.hostId && this.cache.size && !this.hasPlayer(this.meta.hostId) && !this.meta.hostAwayAt) this.meta.hostAwayAt = Date.now();
     this.dirty = true;
   }
 
@@ -153,7 +164,8 @@ export class Room implements DurableObject {
   }
 
   private attach(ws: WebSocket, a: Attached): void {
-    ws.serializeAttachment(a);
+    const transport = ws.deserializeAttachment() as {budget?:Budget;ip?:string;acceptedAt?:number} | null;
+    ws.serializeAttachment({ ...a, budget:transport?.budget, ip:transport?.ip, acceptedAt:transport?.acceptedAt });
     this.cache.set(ws, a);
   }
 
@@ -163,35 +175,31 @@ export class Room implements DurableObject {
     if (!this.loaded) return new Response('starting', { status: 503 });
     const url = new URL(req.url);
 
-    // A Durable Object springs into existence the moment anyone addresses it,
-    // so typing A7X9 for A7XQ used to hand the typist a pristine lobby that
-    // looks exactly like the room they meant to join — same code in the header,
-    // host badge and all, and their friends never arrive. Existence therefore
-    // cannot answer "does this room exist"; a flag only the create path sets is.
-    //
-    // ?new=1 is that path. It is a query parameter because the worker forwards
-    // the client's search string to us untouched, so this needs no change in
-    // index.ts. Contract for apps/web: the client that just minted a code
-    // connects with ?new=1; a client joining an existing code GETs /info first
-    // and shows "sala não existe" when `created` is false, instead of
-    // connecting and materialising the ghost.
-    if (url.searchParams.get('new') === '1' && !this.meta.created) {
-      this.meta.created = true;
-      await this.save();
+    if (url.pathname === '/internal/create' && req.method === 'POST') {
+      return this.state.blockConcurrencyWhile(async () => {
+        if (this.meta.created) return new Response('collision', {status:409});
+        const body = await req.json() as Record<string, unknown>;
+        const config = roomConfig(body);
+        if (!config || typeof body.code !== 'string' || !/^[A-Z0-9]{4}$/.test(body.code)) return new Response('invalid', {status:400});
+        const hostToken = newToken(); const id = crypto.randomUUID();
+        this.meta = {...this.meta, ...config, code:body.code, created:true, securityVersion:2,
+          phase:'lobby',round:0,deadline:0,answers:[],quorumAt:0,matchId:0,seed:crypto.randomUUID(),
+          hostId:id, hostAwayAt:Date.now(), identityCount:1, expiresAt:Date.now()+ROOM_TTL_MS};
+        await this.state.storage.put(`c:${await tokenHash(hostToken)}`, {id,expires:this.meta.expiresAt!} satisfies Capability);
+        await this.save();
+        await this.state.storage.setAlarm(this.meta.expiresAt!);
+        return Response.json({code:this.meta.code, hostToken}, {status:201, headers:{'cache-control':'no-store'}});
+      });
     }
-
-    if (url.pathname.endsWith('/info')) {
-      return Response.json({ ...this.snapshot(), created: this.meta.created, now: Date.now() });
-    }
-    if (req.headers.get('Upgrade') !== 'websocket') {
-      return new Response('expected websocket', { status: 426 });
-    }
-
-    const code = url.searchParams.get('code');
-    if (code && this.meta.code !== code) {
-      this.meta.code = code;
-      await this.save();
-    }
+    // Public queries can never create or mutate a room, including ?new=1.
+    if (!this.meta.created || (this.meta.expiresAt && Date.now() >= this.meta.expiresAt)) return new Response('sala não existe ou expirou', {status:404});
+    if (this.meta.securityVersion !== 2) return new Response('esta sala usa uma versão antiga — crie uma nova', {status:410});
+    if (url.pathname === '/info') return Response.json({...this.snapshot(), created:true, full:this.state.getWebSockets().length >= ROOM_MAX, now:Date.now()}, {headers:{'cache-control':'no-store'}});
+    if (url.pathname !== '/ws') return new Response('not found', {status:404});
+    if (req.headers.get('Upgrade') !== 'websocket') return new Response('expected websocket', {status:426});
+    const ip = await tokenHash(req.headers.get('CF-Connecting-IP') ?? 'local');
+    const sameIp = this.state.getWebSockets().filter(ws => (ws.deserializeAttachment() as {ip?:string} | null)?.ip === ip).length;
+    if (sameIp >= PER_IP_SOCKETS) return new Response('muitas conexões desta rede', {status:429,headers:{'Retry-After':'60'}});
 
     // Count SOCKETS, not joined players. The cap has to bind before we accept,
     // and it has to count the raw connections the object is holding — a
@@ -210,7 +218,7 @@ export class Room implements DurableObject {
     // The accept time is stamped so a socket that connects and never joins —
     // the cheap half of a flood — can be swept (see webSocketMessage/alarm).
     this.state.acceptWebSocket(server);
-    server.serializeAttachment({ acceptedAt: Date.now() });
+    server.serializeAttachment({ acceptedAt: Date.now(), ip });
     // A raw socket triggers none of the message handlers, so nothing else would
     // ever schedule the sweep that removes it if it never joins. Do it here.
     // In lobby this arms the JOIN_GRACE heartbeat; once a match is running the
@@ -220,21 +228,25 @@ export class Room implements DurableObject {
   }
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
-    if (typeof raw !== 'string') return;
-    let msg: ClientMessage;
-    try {
-      msg = JSON.parse(raw) as ClientMessage;
-    } catch {
-      return this.send(ws, { t: 'error', code: 'bad-json', message: 'mensagem ilegível' });
+    const attachment = ws.deserializeAttachment() as {budget?:Budget} | null;
+    const {allowed,budget} = consumeBudget(attachment?.budget, Date.now());
+    ws.serializeAttachment({...attachment, budget});
+    const msg = allowed ? parseMessage(raw) : null;
+    if (!msg) {
+      this.send(ws, {t:'error',code:'bad-message',message:'mensagem inválida ou muitas mensagens — tente novamente depois'});
+      ws.close(4008, 'invalid-or-rate-limited'); return;
     }
-    try {
-      await this.handle(ws, msg);
-    } catch (err) {
-      this.send(ws, { t: 'error', code: 'internal', message: String((err as Error)?.message ?? err) });
+    try { await this.handle(ws, msg); }
+    catch (err) {
+      console.error('room message failed', err instanceof Error ? err.name : 'unknown');
+      this.send(ws, {t:'error',code:'internal',message:'não foi possível concluir agora — tente novamente'});
     }
   }
 
-  async webSocketClose(ws: WebSocket): Promise<void> {
+  async webSocketClose(ws: WebSocket, code = 1000, reason = ''): Promise<void> {
+    // Safe even when the edge auto-replies; local/older runtimes need this
+    // reciprocal frame or the browser stays CLOSING for tens of seconds.
+    try { ws.close(code === 1005 || code === 1006 ? 1000 : code, reason); } catch { /* already closed */ }
     // A throw in any of the runtime handlers below is the leading suspect for
     // the 1006 that dropped every socket at once: an uncaught error in a
     // hibernation handler can tear the object down. Each one is wrapped so a
@@ -260,7 +272,7 @@ export class Room implements DurableObject {
       if (this.limbo.size > LIMBO_MAX) {
         // Evict the oldest so a connect/drop flood cannot grow this unbounded.
         const oldest = [...this.limbo.entries()].sort((x, y) => x[1].at - y[1].at)[0];
-        if (oldest) { this.limbo.delete(oldest[0]); void this.state.storage.delete(`l:${oldest[0]}`); }
+        if (oldest) { this.limbo.delete(oldest[0]); /* durable progress survives until the next match */ }
       }
     }
 
@@ -274,10 +286,7 @@ export class Room implements DurableObject {
       // land after the same player is already back on a new one, and demoting
       // them for their own reconnect would be wrong.
       if (this.meta.hostId === gone.id && !this.hasPlayer(gone.id)) {
-        // Insertion order is the only ordering the room keeps, so the first
-        // entry is the earliest socket still attached.
-        const next = this.cache.values().next();
-        this.meta.hostId = next.done ? null : next.value.id;
+        this.meta.hostAwayAt = Date.now();
         await this.save();
         this.broadcastState();
       }
@@ -287,8 +296,7 @@ export class Room implements DurableObject {
 
   async webSocketError(ws: WebSocket): Promise<void> {
     try {
-      this.cache.delete(ws);
-      this.dirty = true;
+      await this.onClose(ws);
     } catch (err) { console.error('webSocketError', this.cache.size, err); }
   }
 
@@ -296,10 +304,11 @@ export class Room implements DurableObject {
 
   private async handle(ws: WebSocket, msg: ClientMessage): Promise<void> {
     switch (msg.t) {
-      case 'join':    return this.onJoin(ws, msg);
+      case 'join':    return this.state.blockConcurrencyWhile(() => this.onJoin(ws, msg));
       case 'guess':   return this.onGuess(ws, msg);
       case 'config':  return this.onConfig(ws, msg);
       case 'start':   return this.onStart(ws);
+      case 'kick':    return this.onKick(ws, msg);
       case 'page':    return this.onPage(ws, msg);
       case 'ping':    return this.send(ws, { t: 'pong', ts: msg.ts, now: Date.now() });
     }
@@ -307,35 +316,33 @@ export class Room implements DurableObject {
 
   private async onJoin(ws: WebSocket, msg: Extract<ClientMessage, { t: 'join' }>): Promise<void> {
     if (msg.v !== PROTOCOL_VERSION) {
-      return this.send(ws, { t: 'error', code: 'version', message: 'recarregue a página — versão do protocolo mudou' });
+      this.send(ws, { t: 'error', code: 'version', message: 'recarregue a página — versão do protocolo mudou' });
+      ws.close(4002,'version'); return;
     }
+    if (this.cache.has(ws)) return; // identity cannot be switched on a seated socket
+    if (this.meta.securityVersion !== 2) { ws.close(4002,'version'); return; }
     const name = sanitizeName(msg.name);
-    const id = typeof msg.clientId === 'string' && msg.clientId.length >= 8
-      ? msg.clientId.slice(0, 40) : crypto.randomUUID();
-
-    // A reconnect always arrives on a NEW WebSocket object, so the socket can
-    // never be the key that finds the player again — only clientId can, and it
-    // was being used for nothing but minting an id. The old lookup therefore
-    // never matched: a three-second tunnel silently minted a fresh player with
-    // guesses, score, streak and totalGuesses back to zero, and the `state`
-    // frame sent below overwrote the board still on the player's screen.
-    // net.ts promises the opposite — "costs you position but not progress" —
-    // so this is the code catching up with the promise.
-    // Refuse a clientId that collides with the LIVE host. Reconnect adoption is
-    // keyed by clientId, so without this an attacker who read the host prefix
-    // (or simply guessed a short id) could join as the host and evict the real
-    // one. A genuine host reconnect arrives on a socket whose OLD entry we are
-    // about to replace — that is fine; what we block is a SECOND socket
-    // claiming the host id while the first is still live.
-    if (this.meta.hostId && id === this.meta.hostId && this.hasPlayer(id)) {
-      const existing = this.cache.get(ws);
-      if (!existing || existing.id !== id) {
-        this.send(ws, { t: 'error', code: 'host-taken', message: 'esta sala já tem um anfitrião ativo' });
-        try { ws.close(4002, 'host-collision'); } catch { /* já foi */ }
-        return;
+    let token = msg.token;
+    let hash: string;
+    let capability: Capability | undefined;
+    if (token) {
+      hash = await tokenHash(token);
+      capability = await this.state.storage.get<Capability>(`c:${hash}`);
+      if (!capability || capability.blocked || capability.expires <= Date.now()) {
+        this.send(ws,{t:'error',code:'invalid-session',message:'esta sessão não é válida para a sala — volte ao início'});
+        ws.close(4003,'invalid-session'); return;
       }
+    } else {
+      if (this.meta.training || (this.meta.identityCount ?? 0) >= ROOM_IDENTITIES_MAX) {
+        this.send(ws,{t:'error',code:'room-closed',message:'não é possível entrar nesta sala'}); ws.close(4003,'room-closed'); return;
+      }
+      token = newToken(); hash = await tokenHash(token);
+      capability = {id:crypto.randomUUID(), expires:this.meta.expiresAt!};
+      await this.state.storage.put(`c:${hash}`, capability);
+      this.meta.identityCount = (this.meta.identityCount ?? 0)+1;
+      await this.save();
     }
-
+    const id = capability.id; // caller-supplied clientId grants no authority
     let prior = this.evictById(id, ws);
     if (!prior) {
       // No live socket for this id — but they may have dropped moments ago and
@@ -376,17 +383,17 @@ export class Room implements DurableObject {
       a.guesses = [];
       a.solved = new Array(cfg.boards).fill(false);
       a.roundScore = 0;
+      a.breakdown = undefined;
       a.timeMs = 0;
       a.lastGuessAt = 0;
       a.round = this.meta.round;
     }
     a.name = name;
+    a.capabilityHash = hash;
     this.attach(ws, a);
 
-    if (!this.meta.hostId || !this.hasPlayer(this.meta.hostId)) {
-      this.meta.hostId = a.id;
-      await this.save();
-    }
+    if (this.meta.hostId === a.id) { this.meta.hostAwayAt = 0; await this.save(); }
+    await this.reassignAbsentHost();
     if (this.meta.phase === 'lobby' && this.cache.size >= 2 && this.meta.quorumAt === 0) {
       this.meta.quorumAt = Date.now();
       await this.save();
@@ -396,13 +403,21 @@ export class Room implements DurableObject {
     // connection fill the feed with its own name.
     if (!prior) this.pushFeed(['join', a.name, this.cache.size]);
     this.send(ws, {
-      t: 'welcome',
+      t: 'welcome', token,
       you: { id: a.id, name: a.name, isHost: a.id === this.meta.hostId },
       room: this.snapshot(),
       now: Date.now(),
     });
     this.send(ws, { t: 'state', room: this.snapshot(), board: this.boardOf(a), now: Date.now() });
+    if (prior && (this.meta.phase === 'finished' || this.meta.phase === 'intermission')) {
+      const receipt = await this.state.storage.get<{roundEnd: Extract<ServerMessage,{t:'roundEnd'}>;matchEnd?:Extract<ServerMessage,{t:'matchEnd'}>}>(`r:${id}`);
+      if (receipt?.roundEnd.room.matchId === this.meta.matchId && receipt.roundEnd.room.round === this.meta.round) {
+        this.send(ws,{...receipt.roundEnd,room:this.snapshot()});
+        if(receipt.matchEnd && this.meta.phase === 'finished') this.send(ws,{...receipt.matchEnd,room:this.snapshot()});
+      }
+    }
     this.dirty = true;
+    if (this.meta.training && this.meta.phase === 'lobby' && id === this.meta.hostId) await this.beginMatch();
     await this.maybeScheduleAlarm();
   }
 
@@ -460,6 +475,7 @@ export class Room implements DurableObject {
       // Replace rather than add: a player only finishes a round once.
       a.score = a.score - a.roundScore + rs.total;
       a.roundScore = rs.total;
+      a.breakdown = rs;
       a.totalTimeMs += a.timeMs;
       if (rs.fullSolve && rs.perfect > 0) this.pushFeed(['perfect', a.name, a.guesses.length]);
     }
@@ -489,6 +505,29 @@ export class Room implements DurableObject {
     if (this.everyoneFinished(cfg)) await this.endRound();
   }
 
+  private async reassignAbsentHost(): Promise<void> {
+    if (this.meta.hostId && this.hasPlayer(this.meta.hostId)) return;
+    if (!this.meta.hostAwayAt || Date.now() - this.meta.hostAwayAt < HOST_GRACE_MS) return;
+    const next = this.cache.values().next();
+    if (next.done) return; // returning host keeps authority when nobody is waiting
+    this.meta.hostId = next.value.id; this.meta.hostAwayAt = 0;
+    await this.save(); this.broadcastState();
+  }
+
+  private async onKick(ws: WebSocket, msg: Extract<ClientMessage, {t:'kick'}>): Promise<void> {
+    if (this.cache.get(ws)?.id !== this.meta.hostId) return this.send(ws,{t:'error',code:'not-host',message:'só o anfitrião pode remover jogadores'});
+    const targets = [...this.cache].filter(([,a])=>a.id === msg.playerId || a.id.slice(0,8) === msg.playerId);
+    if (targets.length !== 1 || targets[0]![1].id === this.meta.hostId) return;
+    const [target, a] = targets[0]!;
+    if (a.capabilityHash) {
+      const cap = await this.state.storage.get<Capability>(`c:${a.capabilityHash}`);
+      if (cap) await this.state.storage.put(`c:${a.capabilityHash}`, {...cap,blocked:true});
+    }
+    this.cache.delete(target); this.limbo.delete(a.id); await this.state.storage.delete(`l:${a.id}`);
+    this.send(target,{t:'error',code:'removed',message:'o anfitrião removeu você desta sala'});
+    target.close(4003,'removed'); this.dirty=true; this.broadcastState();
+  }
+
   private async onConfig(ws: WebSocket, msg: Extract<ClientMessage, { t: 'config' }>): Promise<void> {
     const a = this.cache.get(ws);
     if (!a || a.id !== this.meta.hostId) {
@@ -497,8 +536,9 @@ export class Room implements DurableObject {
     if (this.meta.phase !== 'lobby' && this.meta.phase !== 'finished') {
       return this.send(ws, { t: 'error', code: 'locked', message: 'a partida já começou' });
     }
+    if (this.meta.training) return;
     if (msg.mode && isMode(msg.mode)) this.meta.mode = msg.mode;
-    if (typeof msg.rounds === 'number') this.meta.rounds = Math.max(1, Math.min(20, Math.round(msg.rounds)));
+    if (typeof msg.rounds === 'number') this.meta.rounds = Math.max(1, Math.min(12, Math.round(msg.rounds)));
     if (typeof msg.pace === 'number' && Number.isFinite(msg.pace)) {
       this.meta.pace = Math.max(PACE_MIN, Math.min(PACE_MAX, msg.pace));
     }
@@ -511,7 +551,7 @@ export class Room implements DurableObject {
     if (!a || a.id !== this.meta.hostId) {
       return this.send(ws, { t: 'error', code: 'not-host', message: 'só quem criou a sala pode começar' });
     }
-    if (this.meta.phase === 'playing' || this.meta.phase === 'countdown') return;
+    if (this.meta.phase !== 'lobby' && this.meta.phase !== 'finished') return;
     await this.beginMatch();
   }
 
@@ -542,7 +582,8 @@ export class Room implements DurableObject {
 
   private async beginMatch(): Promise<void> {
     this.meta.round = 0;
-    this.meta.matchId += 1;
+    this.meta.seed = crypto.randomUUID();
+    this.meta.matchId = Math.max(this.meta.matchId+1,Date.now());
     this.leaderId = null;
     // Drop every durable player record from the previous match. A deploy never
     // fires webSocketClose, so the in-memory sweepLimbo can leave storage keys
@@ -551,9 +592,10 @@ export class Room implements DurableObject {
     for (const key of (await this.state.storage.list<Attached>({ prefix: 'l:' })).keys()) {
       void this.state.storage.delete(key);
     }
+    for (const key of (await this.state.storage.list({prefix:'r:'})).keys()) await this.state.storage.delete(key);
     this.limbo.clear();
     for (const [ws, a] of this.cache) {
-      a.score = 0; a.roundScore = 0; a.streak = 0; a.totalGuesses = 0; a.totalTimeMs = 0;
+      a.score = 0; a.roundScore = 0; a.breakdown = undefined; a.streak = 0; a.totalGuesses = 0; a.totalTimeMs = 0;
       a.matchId = this.meta.matchId;
       this.attach(ws, a);
     }
@@ -584,6 +626,7 @@ export class Room implements DurableObject {
       a.guesses = [];
       a.solved = new Array(cfg.boards).fill(false);
       a.roundScore = 0;
+      a.breakdown = undefined;
       a.timeMs = 0;
       a.round = this.meta.round;
       this.attach(ws, a);
@@ -601,9 +644,18 @@ export class Room implements DurableObject {
 
   private async endRound(): Promise<void> {
     const cfg = this.roundCfg();
-    // Settle anyone the clock caught mid-round.
-    for (const [ws, a] of this.cache) {
-      if (a.round !== this.meta.round) continue;
+    // Include disconnected participants retained for this match. Losing a
+    // network at the deadline must not erase the result or the rematch path.
+    const held=await this.state.storage.list<Attached>({prefix:'l:'});
+    const participants=new Map<string,Attached>();
+    for(const a of held.values()) if(a.matchId===this.meta.matchId) participants.set(a.id,a);
+    for(const a of this.cache.values()) participants.set(a.id,a);
+    const transportById=new Map([...this.cache].map(([ws,a])=>[a.id,ws]));
+    for (const a of participants.values()) {
+      if(a.round !== this.meta.round) {
+        a.round=this.meta.round;a.guesses=[];a.solved=new Array(cfg.boards).fill(false);
+        a.roundScore=0;a.breakdown=undefined;a.streak=0;
+      }
       if (a.roundScore === 0 && !this.isFinished(a, cfg)) {
         const solvedCount = a.solved.filter(Boolean).length;
         a.timeMs = cfg.roundMs;
@@ -613,48 +665,51 @@ export class Room implements DurableObject {
         );
         a.score += rs.total;
         a.roundScore = rs.total;
+        a.breakdown = rs;
         a.totalTimeMs += a.timeMs;
       }
       a.streak = a.solved.length > 0 && a.solved.every(Boolean) ? a.streak + 1 : 0;
-      this.attach(ws, a);
+      const ws=transportById.get(a.id);if(ws)this.attach(ws,a);
     }
 
     this.dirty = true;
-    this.recompute();
+    this.order=[...participants.values()].map(a=>({id:a.id,name:a.name,score:a.score,guesses:a.totalGuesses,solvedWords:a.solved.filter(Boolean).length,timeMs:a.totalTimeMs,streak:a.streak})).sort(compareStandings);
+    this.ranks=new Map(this.order.map((a,i)=>[a.id,i+1]));
     const last = this.meta.round >= this.meta.rounds;
     this.meta.phase = last ? 'finished' : 'intermission';
     this.meta.deadline = Date.now() + (last ? 0 : INTERMISSION_MS);
     await this.save();
 
     const podium = this.order.slice(0, 3).map((s, i) => this.row(s, i + 1));
-    for (const [ws, a] of this.cache) {
-      this.send(ws, {
-        t: 'roundEnd', room: this.snapshot(), answers: [...this.meta.answers],
-        you: {
-          score: a.score, rank: this.ranks.get(a.id) ?? 0,
-          solvedWords: a.solved.filter(Boolean).length, guesses: a.guesses.length, roundScore: a.roundScore,
-        },
-        podium,
-      });
+    const receipts = new Map<string, {roundEnd: Extract<ServerMessage,{t:'roundEnd'}>;matchEnd?:Extract<ServerMessage,{t:'matchEnd'}>}>();
+    for (const a of participants.values()) {
+      const roundEnd: Extract<ServerMessage,{t:'roundEnd'}> = {
+        t:'roundEnd',room:this.snapshot(),answers:[...this.meta.answers],podium,
+        you:{score:a.score,rank:this.ranks.get(a.id)??0,solvedWords:a.solved.filter(Boolean).length,guesses:a.guesses.length,roundScore:a.roundScore,breakdown:a.breakdown}
+      };
+      receipts.set(a.id,{roundEnd});
     }
 
     if (last) {
       const standings = this.order.slice(0, 50).map((s, i) => this.row(s, i + 1));
-      for (const [ws, a] of this.cache) {
-        this.send(ws, {
-          // The words ride here as well as in `roundEnd` because the phase is
-          // already 'finished' by now, and the client only reveals on
-          // 'intermission' — so the last round of every match, the one people
-          // actually talk about afterwards, never showed its answers.
-          t: 'matchEnd', room: this.snapshot(), standings,
-          answers: [...this.meta.answers],
-          you: { rank: this.ranks.get(a.id) ?? 0, score: a.score },
-        });
+      for (const a of participants.values()) {
+        const matchEnd: Extract<ServerMessage,{t:'matchEnd'}> = {
+          t:'matchEnd',room:this.snapshot(),standings,answers:[...this.meta.answers],
+          you:{rank:this.ranks.get(a.id)??0,score:a.score,breakdown:a.breakdown}
+        };
+        receipts.get(a.id)!.matchEnd=matchEnd;
       }
-      await this.state.storage.deleteAlarm();
+      await this.state.storage.setAlarm(this.meta.expiresAt!);
     } else {
       await this.state.storage.setAlarm(this.meta.deadline);
     }
+    await Promise.all([...participants.values()].flatMap(a=>[this.state.storage.put(`l:${a.id}`,a),this.state.storage.put(`r:${a.id}`,receipts.get(a.id)!)]));
+    this.limbo.clear(); // storage now holds the authoritative settled record
+    for(const [ws,a] of this.cache) {
+      const receipt=receipts.get(a.id)!;
+      this.send(ws,receipt.roundEnd);if(receipt.matchEnd)this.send(ws,receipt.matchEnd);
+    }
+
   }
 
   async alarm(): Promise<void> {
@@ -672,6 +727,13 @@ export class Room implements DurableObject {
 
   private async onAlarm(): Promise<void> {
     const now = Date.now();
+    if (this.meta.expiresAt && now >= this.meta.expiresAt) {
+      for (const ws of this.state.getWebSockets()) {this.send(ws,{t:'error',code:'expired',message:'Esta sala expirou. Volte ao início para criar outra.'});ws.close(4003,'expired');}
+      this.cache.clear(); await this.state.storage.deleteAll(); this.meta.created=false;
+      await this.state.storage.deleteAlarm(); return;
+    }
+    this.sweepUnjoined();
+    await this.reassignAbsentHost();
     switch (this.meta.phase) {
       case 'countdown':
         if (now >= this.meta.deadline) return void (await this.startRound());
@@ -688,14 +750,6 @@ export class Room implements DurableObject {
         // stream: above a few dozen players the host is present by definition,
         // and firing the match 30s after the SECOND arrival would start it
         // long before the audience finished joining.
-        if (
-          this.meta.quorumAt &&
-          now - this.meta.quorumAt >= AUTOSTART_MS &&
-          this.cache.size >= 2 &&
-          this.cache.size <= AUTOSTART_MAX_PLAYERS
-        ) {
-          return void (await this.beginMatch());
-        }
         // A waiting lobby is not a dead screen: flush the arrivals that piled up
         // since the last tick so the count climbs and names appear. Coalesced
         // (one send per socket per tick, not per join) so a 1000-person rush is
@@ -704,13 +758,17 @@ export class Room implements DurableObject {
         this.sweepUnjoined();
         this.sweepLimbo();
         return void (await this.maybeScheduleAlarm());
+      case 'finished':
+        if (this.dirty) this.broadcastLobby();
+        await this.maybeScheduleAlarm();
+        return;
       default:
         return;
     }
   }
 
   private async maybeScheduleAlarm(): Promise<void> {
-    if (this.meta.phase !== 'lobby') return;
+    if (this.meta.phase !== 'lobby' && this.meta.phase !== 'finished') return;
     const pending = await this.state.storage.getAlarm();
     // Two reasons to hold a lobby alarm: an autostart is due, or there are more
     // raw sockets than seated players — zombies to sweep. Without the second,
@@ -718,12 +776,10 @@ export class Room implements DurableObject {
     // real players would never be swept, because nothing would wake the object.
     const now = Date.now();
     const zombies = this.state.getWebSockets().length > this.cache.size;
-    const when: number[] = [];
+    const when: number[] = [this.meta.expiresAt ?? now + ROOM_TTL_MS];
+    if (this.meta.hostAwayAt && this.cache.size) when.push(Math.max(now+700, this.meta.hostAwayAt + HOST_GRACE_MS));
     // Autostart is only a small-room affair (a friends' lobby whose host left);
     // above the cap the host starts it by hand.
-    if (this.meta.quorumAt && this.cache.size >= 2 && this.cache.size <= AUTOSTART_MAX_PLAYERS) {
-      when.push(this.meta.quorumAt + AUTOSTART_MS);
-    }
     // A pending flush: arrivals to show. Coalesced at the tick cadence so a rush
     // does not fan out per join — and taken as the SOONEST time, so a count that
     // must climb is not held hostage by a 30s autostart timer above it.
@@ -900,9 +956,10 @@ export class Room implements DurableObject {
    * knows — empty top/hist, live `online`, and the join/leave feed.
    */
   private broadcastLobby(): void {
+    this.recompute();
     const frame = JSON.stringify({
       t: 'tick', now: Date.now(), online: this.cache.size,
-      solved: 0, hist: [], top: [], feed: this.feed.slice(-6),
+      solved: 0, hist: [], top: this.order.slice(0,20).map((s,i)=>this.row(s,i+1)), feed: this.feed.slice(-6),
     });
     for (const [ws] of this.cache) {
       try { ws.send(frame); } catch { this.cache.delete(ws); }
@@ -945,6 +1002,7 @@ export class Room implements DurableObject {
   private snapshot(): RoomSnapshot {
     const cfg = this.roundCfg();
     return {
+      training: this.meta.training ?? false, pace:this.meta.pace, matchId:this.meta.matchId,
       code: this.meta.code, mode: this.meta.mode, phase: this.meta.phase,
       round: this.meta.round, rounds: this.meta.rounds,
       online: this.cache.size, deadline: this.meta.deadline,
@@ -1037,7 +1095,7 @@ export class Room implements DurableObject {
     for (const [id, held] of this.limbo) {
       if (now - held.at > LIMBO_MS) {
         this.limbo.delete(id);
-        void this.state.storage.delete(`l:${id}`);
+        // Durable progress remains bounded by room identities and expires with the match.
       }
     }
   }
@@ -1061,6 +1119,6 @@ export class Room implements DurableObject {
 }
 
 function sanitizeName(raw: unknown): string {
-  const s = String(raw ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_NAME);
+  const s = String(raw ?? '').normalize('NFKC').replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, '').replace(/\s+/g, ' ').trim().slice(0, MAX_NAME);
   return s.length >= 2 ? s : `anon${Math.floor(Math.random() * 9000 + 1000)}`;
 }

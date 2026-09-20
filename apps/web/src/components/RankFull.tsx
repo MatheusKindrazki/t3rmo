@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CUT_RANKS, PAGE_MAX, type RowWire } from '@arena/core';
+import { Modal } from './Modal.tsx';
 import { fmtInt } from '../lib/game.ts';
 
-const ROW_H = 32;
+const ROW_H = 48;
 const BUFFER = 8;
 
 /** Ranks that mark an elite step, for quick lookup while scrolling. */
@@ -22,7 +23,7 @@ function cutLabel(rank: number): string | null {
  * visible target.
  */
 export function RankFull({
-  total, rows, myRank, myId, cuts, requestPage, onClose,
+  total, rows, myRank, myId, cuts, requestPage, onClose, onKick,
 }: {
   total: number;
   rows: Record<number, RowWire>;
@@ -31,6 +32,7 @@ export function RankFull({
   cuts: number[];
   requestPage: (from: number, to: number) => void;
   onClose: () => void;
+  onKick?: (id:string) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -48,7 +50,7 @@ export function RankFull({
     for (let r = first; r <= last; r++) if (!rows[r]) { hole = true; break; }
     if (!hole) return;
     const now = Date.now();
-    if (now - lastReq.current < 700) return;
+    if (now - lastReq.current < 1100) return;
     lastReq.current = now;
     const from = Math.max(0, first - 1);
     const to = Math.min(total, Math.min(from + PAGE_MAX, last));
@@ -72,6 +74,8 @@ export function RankFull({
     fill(scrollTop, viewH);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, scrollTop, viewH]);
+
+  useEffect(() => { const timer=setInterval(()=>fill(scrollTop,viewH),1200); return ()=>clearInterval(timer); },[rows,scrollTop,viewH]);
 
   const onScroll = () => {
     const el = scroller.current;
@@ -100,7 +104,7 @@ export function RankFull({
     : [];
 
   return (
-    <div className="rankfull-veil" onClick={onClose}>
+    <Modal title="Ranking completo" onClose={onClose}>
       <div className="rankfull" onClick={(e) => e.stopPropagation()}>
         <div className="rankfull-hd">
           <span className="rail-t">Ranking completo</span>
@@ -131,7 +135,7 @@ export function RankFull({
                   data-you={you || undefined}
                   data-p={rank <= 3 ? rank : undefined}
                   data-cut={tag ? true : undefined}
-                  style={{ transform: `translateY(${(rank - 1) * ROW_H}px)` }}
+                  style={{ transform: `translateY(${(rank - 1) * ROW_H}px)`,height:ROW_H,gridTemplateColumns:onKick?'28px minmax(60px,1fr) 28px 48px 68px':undefined }}
                 >
                   <span className="lb-k">{rank}</span>
                   <span className="lb-nm">
@@ -140,6 +144,7 @@ export function RankFull({
                   </span>
                   <span className="lb-a">{row ? `${row[4]}t` : ''}</span>
                   <span className="lb-s">{row ? fmtInt(row[3]) : ''}</span>
+                  {row && onKick && row[1] !== mine && <button className="link" aria-label={`Remover ${row[2]}`} onClick={()=>{if(window.confirm(`Remover ${row[2]} desta sala?`))onKick(row[1]);}}>Remover</button>}
                 </div>
               );
             })}
@@ -150,6 +155,6 @@ export function RankFull({
           <button className="rankfull-me" onClick={jumpToMe}>ir para a minha posição · {myRank > 0 ? fmtInt(myRank) : '—'}</button>
         )}
       </div>
-    </div>
+    </Modal>
   );
 }

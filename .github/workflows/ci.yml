@@ -34,7 +34,7 @@ jobs:
         run: pnpm -r typecheck
 
       - name: testes do núcleo
-        run: node --test packages/core/test/core.test.ts
+        run: pnpm test
 
       # The dictionary is generated from two committed inputs. If someone edits
       # answers.ts and forgets to regenerate, the answer they added is not a

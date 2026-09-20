@@ -39,7 +39,7 @@ import { arg, flag, Hist, STATUS_PATH, fmtMs, fmtBytes } from './loadtest-shared
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-const N = Number(arg('n', 200));
+const N = Number(arg('n', 20));
 const HOST = arg('host', '127.0.0.1:8791');
 const MODE = arg('mode', 'termo');
 const ROUNDS = Number(arg('rounds', 1));
@@ -142,10 +142,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function main() {
   // --code joins an existing room (a human already sitting in it); without it
   // the test mints its own.
-  let code = CODE_IN;
+  if(N > 48) throw new Error('Public policy permits bounded tests up to 48 bots per source; use a separately approved staging policy for capacity tests.');
+  let code = CODE_IN; let hostToken;
   if (!code) {
-    const res = await fetch(`${HTTP}://${HOST}/api/rooms`, { method: 'POST' });
-    ({ code } = await res.json());
+    const res = await fetch(`${HTTP}://${HOST}/api/rooms`, { method:'POST', headers:{Origin:`${HTTP}://${HOST}`,'Content-Type':'application/json'}, body:JSON.stringify({mode:MODE,rounds:ROUNDS,pace:1}) });
+    if (!res.ok) throw new Error(`Room creation failed: ${res.status}`);
+    ({ code, hostToken } = await res.json());
   }
 
   // Round length comes from the server, not from a table in here: MISTO does
@@ -195,7 +197,7 @@ async function main() {
     child.send({
       t: 'init',
       cfg: {
-        id: w, from, to, total: N, host: HOST, code, wsScheme: WS, runId,
+        id: w, from, to, total: N, host: HOST, code, hostToken:w === 0 ? hostToken : undefined, wsScheme: WS, runId,
         rampStart, rampMs: RAMP_MS, reportMs: REPORT_MS,
         // ~25 detailed tick samplers and ~40 ping probes, spread evenly over
         // the fleet instead of bunched in worker 0.

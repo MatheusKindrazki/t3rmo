@@ -1,170 +1,72 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { MODES, MODE_IDS, roundConfig, PACE_MIN, PACE_MAX, type Mode } from '@arena/core';
 import { fmtClock } from '../lib/game.ts';
 
-/** A word for the tempo slider, so the number is not the only cue. */
-function paceWord(p: number): string {
-  if (p <= 0.7) return 'relâmpago';
-  if (p <= 0.9) return 'rápido';
-  if (p < 1.2) return 'normal';
-  if (p <= 1.5) return 'tranquilo';
-  return 'maratona';
-}
-import { Crowd } from './Crowd.tsx';
-
-/** T3RMO is five characters — exactly one Termo row. The mark IS the game. */
-function Mark() {
-  return (
-    <div className="mark-tiles" aria-label="T3RMO">
-      {['T', '3', 'R', 'M', 'O'].map((ch, i) => (
-        <span key={i} className="mt" data-hit={ch === '3' ? 'right' : 'plain'} style={{ animationDelay: `${i * 85}ms` }}>
-          {ch}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-/** The board shape, drawn — four pips said nothing four squares do not. */
 function Glyph({ n }: { n: number }) {
-  // n = board count for TERMO..QUARTETO. MISTO passes 0 and gets a rising
-  // ladder instead — it is the "all of them, in sequence" mode, not one board.
-  if (n === 0) {
-    return (
-      <span className="glyph glyph-ladder" aria-hidden>
-        {[1, 2, 3, 4].map((h) => <span key={h} style={{ height: `${h * 3 + 2}px` }} />)}
-      </span>
-    );
-  }
-  return <span className="glyph" data-n={n}>{Array.from({ length: n }, (_, i) => <span key={i} />)}</span>;
+  if (n === 0) return <span className="glyph glyph-ladder" aria-hidden="true">{[1, 2, 3, 4].map(h => <span key={h} style={{ height: `${h * 3 + 2}px` }} />)}</span>;
+  return <span className="glyph" data-n={n} aria-hidden="true">{Array.from({ length: n }, (_, i) => <span key={i} />)}</span>;
 }
 
-/**
- * Two full-bleed halves with a hard edge: a solid slab of entry controls
- * against the left, and the crowd itself filling everything to the right of it.
- *
- * The page it replaced was the default template — oversized heading, a
- * subheading, a form rail, a three-column 01/02/03 strip, and the bottom forty
- * percent left as empty ground. Nothing about it belonged to this product.
- * Here the claim "thousands of people, the same word, the same second" is not
- * written above a form; it is the picture you are looking at.
- */
-export function Landing({
-  name, setName, onCreate, onJoin, busy, error, onRules, onProgress,
-}: {
-  name: string;
-  setName: (n: string) => void;
-  onCreate: (mode: Mode, rounds: number, pace: number) => void;
-  onJoin: (code: string) => void | Promise<void>;
-  busy: boolean;
-  error: string | null;
-  onRules: () => void;
-  onProgress: () => void;
+type Preview = { created?: boolean; phase?: string; mode?: Mode; rounds?: number; online?: number; training?: boolean; full?: boolean };
+export function Landing({ name, setName, onCreate, onJoin, busy, error, onRules, onProgress }: {
+  name: string; setName: (n: string) => void;
+  onCreate: (mode: Mode, rounds: number, pace: number, training?: boolean) => void;
+  onJoin: (code: string) => void | Promise<void>; busy: boolean; error: string | null;
+  onRules: () => void; onProgress: () => void;
 }) {
+  const initial = new URLSearchParams(location.search).get('sala')?.toUpperCase() ?? '';
+  const [step, setStep] = useState<'home' | 'setup' | 'join'>(initial ? 'join' : 'home');
   const [mode, setMode] = useState<Mode>('termo');
-  const [rounds, setRounds] = useState(5);
+  const [rounds, setRounds] = useState(3);
   const [pace, setPace] = useState(1);
-  const [code, setCode] = useState('');
-  const cfg = MODES[mode];
-
-  return (
-    <div className="lp">
-      {/* Desk first in the DOM as well as on screen: it is the narrow column,
-          and a keyboard user should reach the form before the scenery. */}
-      <aside className="lp-desk">
-        <div className="lp-desk-in">
-          <Mark />
-          <h1 className="lp-claim">Termo<br />competitivo</h1>
-
-          <div className="lp-entry">
-            <label className="label" htmlFor="nick">seu nome na tabela</label>
-            <input
-              id="nick" className="input" value={name} maxLength={16}
-              placeholder="aparece no ranking"
-              onChange={(e) => setName(e.target.value)}
-            />
-
-            <span className="label" style={{ marginTop: 16 }}>formato</span>
-            <div className="seg">
-              {MODE_IDS.filter((m) => m !== 'misto').map((m) => (
-                <button key={m} className="seg-b" data-on={mode === m} onClick={() => setMode(m)}>
-                  <Glyph n={MODES[m].boards} />
-                  <span className="seg-name">{MODES[m].label}</span>
-                  <span className="seg-meta">{MODES[m].boards} palavra{MODES[m].boards > 1 ? 's' : ''}</span>
-                </button>
-              ))}
-            </div>
-            {/* MISTO is not a fifth peer in the grid — it is the combination of
-                the other four, so it gets its own full-width row that says so. */}
-            <button className="seg-misto" data-on={mode === 'misto'} onClick={() => setMode('misto')}>
-              <Glyph n={0} />
-              <span className="seg-misto-text">
-                <b>MISTO</b>
-                <i>sobe a escada — um TERMO, um DUETO, um TRIETO, um QUARTETO</i>
-              </span>
-            </button>
-
-            <div className="lp-rounds">
-              <label className="label" htmlFor="rounds">rodadas <b>{rounds}</b></label>
-              <input
-                id="rounds" className="slider" type="range" min={1} max={12} value={rounds}
-                onChange={(e) => setRounds(Number(e.target.value))}
-                style={{ ['--fill' as string]: `${((rounds - 1) / 11) * 100}%` }}
-              />
-              <span className="lp-meta">
-                {mode === 'misto'
-                  ? `${rounds} rodada${rounds > 1 ? 's' : ''} · a escada recomeça a cada 4`
-                  : `${cfg.maxGuesses} tentativas por rodada`}
-              </span>
-            </div>
-
-            <div className="lp-rounds lp-tempo">
-              <label className="label" htmlFor="pace">tempo <b>{paceWord(pace)}</b></label>
-              <input
-                id="pace" className="slider" type="range" min={PACE_MIN} max={PACE_MAX} step={0.1} value={pace}
-                onChange={(e) => setPace(Number(e.target.value))}
-                style={{ ['--fill' as string]: `${((pace - PACE_MIN) / (PACE_MAX - PACE_MIN)) * 100}%` }}
-              />
-              <span className="lp-meta">
-                {mode === 'misto'
-                  ? `escada ${fmtClock(roundConfig('misto', 1, pace).roundMs)} → ${fmtClock(roundConfig('misto', 4, pace).roundMs)}`
-                  : `${fmtClock(roundConfig(mode, 1, pace).roundMs)} no relógio`}
-              </span>
-            </div>
-
-            <button className="btn lp-cta" disabled={busy} onClick={() => onCreate(mode, rounds, pace)}>
-              {busy ? 'abrindo…' : 'abrir sala'}
-            </button>
-
-            <div className="join">
-              <input
-                className="input" placeholder="CÓDIGO" value={code} maxLength={8}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
-                onKeyDown={(e) => { if (e.key === 'Enter' && code.length >= 3) onJoin(code); }}
-              />
-              <button className="btn" data-variant="ghost" disabled={code.length < 3} onClick={() => onJoin(code)}>
-                entrar
-              </button>
-            </div>
-
-            {error && <div className="err">{error}</div>}
-          </div>
-
-          <footer className="lp-foot">
-            <p>Quem fecha em <em>menos tentativas</em> fica na frente. O relógio só desempata dentro do mesmo número.</p>
-            <nav>
-              <button className="link" onClick={onRules}>como jogar</button>
-              <button className="link" onClick={onProgress}>seu progresso</button>
-            </nav>
-          </footer>
-        </div>
-      </aside>
-
-      {/* The crowd is the page's ground, not decoration behind a card. */}
-      <div className="lp-field">
-        <Crowd />
-        <div className="lp-field-cap"><span>a sala inteira na mesma palavra, no mesmo segundo</span></div>
-      </div>
-    </div>
-  );
+  const [code, setCode] = useState(initial);
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [previewError, setPreviewError] = useState('');
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (step !== 'join') return;
+    let active = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    setPreview(null); setPreviewError('');
+    fetch(`/api/rooms/${encodeURIComponent(code)}/info`, { signal: controller.signal })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(res.status === 404 ? 'Não encontramos essa sala. Confira o código ou crie uma nova.' : 'Não foi possível consultar a sala. Tente novamente.');
+        const info = await res.json() as Preview;
+        if(info.training) throw new Error('Esse convite é de um treino solo. Crie uma sala para jogar com amigos.');
+        if(info.full) throw new Error('A sala está cheia. Tente novamente em instantes.');
+        if (!info.created) throw new Error('Não encontramos essa sala. Confira o código ou crie uma nova.');
+        if (active) setPreview(info);
+      }).catch((e) => { if (!active) return; if (!controller.signal.aborted) setPreviewError(e.message); else setPreviewError('A consulta demorou. Tente novamente.'); })
+      .finally(() => clearTimeout(timeout));
+    return () => { active = false; clearTimeout(timeout); controller.abort(); };
+  }, [step, retry]);
+  const duration = Array.from({ length: rounds }, (_, i) => roundConfig(mode, i + 1, pace).roundMs).reduce((a, b) => a + b, 0);
+  const nick = <><label className="label" htmlFor="nick">Seu nome na sala</label><input id="nick" className="input" value={name} maxLength={16} placeholder="Como podemos chamar você?" onChange={(e) => setName(e.target.value)} /><p className="entry-note">É assim que você aparece na sala. Se deixar vazio, usaremos um nome temporário.</p></>;
+  return <main className="entry" data-step={step}>
+    <header className="entry-header"><a href="/" className="mark-tiles" aria-label="T3RMO início">{[...'T3RMO'].map((ch, i) => <span className="mt" data-hit={i === 1 ? 'right' : 'plain'} key={i}>{ch}</span>)}</a><nav><button className="link" onClick={onRules}>Como jogar</button><button className="link" onClick={onProgress}>Meu progresso</button></nav></header>
+    <div className="entry-grid"><section className="entry-main">
+      {step === 'home' ? <>
+        <p className="entry-eyebrow">JOGO DE PALAVRAS · EM TEMPO REAL</p>
+        <h1>A mesma palavra.<br />Uma disputa entre amigos.</h1>
+        <p className="entry-description">Crie uma sala, compartilhe o link e joguem ao mesmo tempo. Grátis, sem cadastro.</p>
+        <div className="entry-actions"><button className="btn" disabled={busy} onClick={() => setStep('setup')}>Jogar com amigos</button><span className="entry-note">Você cria a sala e manda o convite.</span><button className="btn" data-variant="ghost" disabled={busy} onClick={() => onCreate('termo', 1, 1, true)}>{busy ? 'Preparando treino…' : 'Jogar agora'}</button><span className="entry-note">Treino solo · 1 rodada</span></div>
+        <form className="entry-code" onSubmit={(e) => { e.preventDefault(); setStep('join'); }}><label htmlFor="room-code">Recebeu um código?</label><div className="join"><input id="room-code" aria-label="Código da sala" className="input" placeholder="CÓDIGO DA SALA" maxLength={4} value={code} onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))} /><button className="btn" data-variant="ghost" disabled={busy || code.length !== 4}>Entrar</button></div></form>
+      </> : <>
+        <button className="link" disabled={busy} onClick={() => setStep('home')}>← Voltar</button>
+        <h1>{step === 'setup' ? 'Sua sala, suas regras.' : `Convite para a sala ${code}`}</h1>
+        {step === 'setup' ? <form onSubmit={(e) => { e.preventDefault(); onCreate(mode, rounds, pace); }}>
+          {nick}<p className="entry-summary">{MODES[mode].label} · {rounds} rodadas · {pace === 1 ? 'tempo normal' : `${pace}× tempo`}<small>Até {fmtClock(duration)} de relógio, mais as pausas entre rodadas.</small></p>
+          <details className="entry-custom"><summary>Personalizar partida</summary><fieldset><legend>Formato</legend><div className="seg">{MODE_IDS.filter(m => m !== 'misto').map(m => <button type="button" key={m} className="seg-b" data-on={mode === m} aria-pressed={mode === m} onClick={() => setMode(m)}><Glyph n={MODES[m].boards} /><span className="seg-name">{MODES[m].label}</span><span className="seg-meta">{MODES[m].boards} palavra{MODES[m].boards > 1 ? 's' : ''}</span></button>)}</div><button type="button" className="seg-misto" data-on={mode === 'misto'} aria-pressed={mode === 'misto'} onClick={() => { setMode('misto'); setRounds(4); }}><Glyph n={0} /><span className="seg-misto-text"><b>MISTO</b><i>Uma rodada de cada: TERMO, DUETO, TRIETO e QUARTETO</i></span></button></fieldset>{mode === 'misto' && <p className="entry-note">Uma rodada de cada formato. Depois do quarteto, a sequência recomeça.{rounds < 4 ? ' Com menos de 4 rodadas, você não passa por todos os formatos.' : ''}</p>}<label className="label" htmlFor="rounds">Rodadas: {rounds}</label><input id="rounds" className="slider" type="range" min={1} max={12} value={rounds} onChange={(e) => setRounds(+e.target.value)} /><label className="label" htmlFor="pace">Tempo: {pace}×</label><input id="pace" className="slider" type="range" min={PACE_MIN} max={PACE_MAX} step="0.1" value={pace} onChange={(e) => setPace(+e.target.value)} /></details>
+          <button className="btn" disabled={busy}>{busy ? 'Criando sala…' : 'Criar sala'}</button>
+        </form> : <>
+          {!preview && !previewError && <p role="status">Consultando sala…</p>}
+          {previewError && <><p role="alert">{previewError}</p><button className="btn" onClick={() => setRetry(retry + 1)}>Tentar novamente</button></>}
+          {preview && (preview.phase === 'finished' ? <><p>Essa partida terminou.</p><button className="btn" onClick={() => setStep('setup')}>Criar nova sala</button><button className="btn" data-variant="ghost" disabled={busy} onClick={() => onCreate('termo', 1, 1, true)}>Treinar agora</button></> : <form onSubmit={(e) => { e.preventDefault(); onJoin(code); }}><p className="entry-summary">{preview.mode ? MODES[preview.mode]?.label : 'Sala de amigos'} · {preview.online ?? 0} participantes</p>{preview.phase === 'playing' && <p>Você entra na rodada em andamento, com o tempo restante. A próxima começa junto para todos.</p>}{nick}<button className="btn" disabled={busy}>{busy ? 'Entrando…' : 'Entrar na sala'}</button></form>)}
+        </>}
+      </>}
+      {error && <p className="err" role="alert">{error}</p>}
+    </section><aside className="entry-example"><p className="entry-eyebrow">CADA PALPITE, UMA PISTA</p><div className="example-board" aria-label="Exemplo ilustrativo: letra certa, posição diferente e letra ausente">{[...'TURMA'].map((ch, i) => <span className="ex-t" data-state={i === 0 ? 2 : i === 2 ? 1 : 0} key={i}>{ch}</span>)}</div><h2>Encontre as cinco letras.</h2><p>Verde: letra no lugar certo.<br />Areia: letra em outra posição.<br />Escuro: letra ausente.</p><p className="entry-note">Exemplo ilustrativo. Ative símbolos em “Como jogar” se preferir pistas além das cores.</p></aside></div>
+    <footer className="entry-footer"><p>Acertos, tentativas, velocidade e sequência compõem sua pontuação. Um palpite vale para todos os tabuleiros da rodada.</p><nav><a href="/como-jogar/">Regras e pontuação</a><a href="/jogar-com-amigos/">Como jogar com amigos</a></nav></footer>
+  </main>;
 }
