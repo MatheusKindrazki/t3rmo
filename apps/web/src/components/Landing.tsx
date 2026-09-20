@@ -43,7 +43,7 @@ export function Landing({ name, setName, onCreate, onJoin, busy, error, onRules,
   }, [step, retry]);
   const duration = Array.from({ length: rounds }, (_, i) => roundConfig(mode, i + 1, pace).roundMs).reduce((a, b) => a + b, 0);
   const nick = <><label className="label" htmlFor="nick">Seu nome na sala</label><input id="nick" className="input" value={name} maxLength={16} placeholder="Como podemos chamar você?" onChange={(e) => setName(e.target.value)} /><p className="entry-note">É assim que você aparece na sala. Se deixar vazio, usaremos um nome temporário.</p></>;
-  return <main className="entry">
+  return <main className="entry" data-step={step}>
     <header className="entry-header"><a href="/" className="mark-tiles" aria-label="T3RMO início">{[...'T3RMO'].map((ch, i) => <span className="mt" data-hit={i === 1 ? 'right' : 'plain'} key={i}>{ch}</span>)}</a><nav><button className="link" onClick={onRules}>Como jogar</button><button className="link" onClick={onProgress}>Meu progresso</button></nav></header>
     <div className="entry-grid"><section className="entry-main">
       {step === 'home' ? <>

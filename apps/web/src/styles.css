@@ -1376,3 +1376,7 @@ html:not([data-marks='on']) .ex-t[data-state]::after { display: none; }
   .result-actions .btn { width:100%; white-space:normal; }
   .result-actions-share { align-items:stretch; }
 }
+
+/* Expanding setup must not recenter its neighboring illustration. */
+.entry { scrollbar-gutter:stable; }
+.entry[data-step="setup"] .entry-grid { align-items:start; }
