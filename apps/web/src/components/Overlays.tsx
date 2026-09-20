@@ -146,11 +146,13 @@ export function MatchEndVeil({
         {/* Everyone gets a way out to the home screen — the non-host used to be
             stranded on "aguardando…" with no exit at all. The host also gets
             to restart the match in place. */}
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 18, flexWrap: 'wrap', position: 'relative', zIndex: 2 }}>
+        <div className="result-actions">
+        <div className="result-actions-primary">
           {isHost && <button className="btn" onClick={onAgain}>{training ? 'Treinar de novo' : 'Jogar de novo'}</button>}
           <button className="btn" data-variant="ghost" onClick={onLeave}>{training ? 'Chamar amigos para jogar' : 'Voltar ao início'}</button>
         </div>
-        <ShareAction label="Compartilhar resultado" text={training ? `Treinei no T3RMO: ${guesses} tentativas. Bora jogar juntos? https://t3rmo.com/` : `Joguei T3RMO com amigos${you ? `: posição ${you.rank}, ${you.score} pontos` : ''}. Bora jogar? https://t3rmo.com/`} />
+        <div className="result-actions-share"><ShareAction label="Compartilhar resultado" text={training ? `Treinei no T3RMO: ${guesses} tentativas. Bora jogar juntos? https://t3rmo.com/` : `Joguei T3RMO com amigos${you ? `: posição ${you.rank}, ${you.score} pontos` : ''}. Bora jogar? https://t3rmo.com/`} /></div>
+        </div>
         {!isHost && (
           <div className="hint" style={{ marginTop: 12 }}>quem criou a sala pode começar outra partida</div>
         )}
