@@ -37,7 +37,7 @@ jobs:
       # Deploy gates on the same checks CI runs. A red build that still ships is
       # a pipeline that exists to make you feel safe rather than be safe.
       - run: pnpm -r typecheck
-      - run: node --test packages/core/test/core.test.ts
+      - run: pnpm test
 
       - name: build do cliente
         run: pnpm --filter @arena/web build
@@ -63,6 +63,6 @@ jobs:
             sleep 10
           done
           [ "$code" = "200" ] || { echo "::error::/api/health respondeu $code"; exit 1; }
-          sala=$(curl -s --max-time 15 -X POST https://t3rmo.com/api/rooms | tr -d '\n')
-          echo "$sala" | grep -q '"code"' || { echo "::error::criação de sala falhou: $sala"; exit 1; }
-          echo "produção ok · $sala"
+          sala=$(curl -s --max-time 15 -H 'Origin: https://t3rmo.com' -X POST https://t3rmo.com/api/rooms | tr -d '\n')
+          echo "$sala" | grep -q '"code"' || { echo "::error::criação de sala falhou"; exit 1; }
+          echo "produção ok · sala criada"

@@ -1,7 +1,7 @@
 import { MODES, MODE_IDS, type Mode } from '@arena/core';
 import { useState } from 'react';
 import { Modal } from './Modal.tsx';
-import { loadStats, emptyMode, avgGuesses, avgRank, winRate } from '../lib/stats.ts';
+import { loadStats, loadTrainingStats, emptyMode, avgGuesses, avgRank, winRate } from '../lib/stats.ts';
 import { fmtInt } from '../lib/game.ts';
 
 /**
@@ -16,15 +16,18 @@ import { fmtInt } from '../lib/game.ts';
 export function Progress({ mode, onClose }: { mode: Mode; onClose: () => void }) {
   const [tab, setTab] = useState<Mode>(mode);
   const all = loadStats();
+  const training = loadTrainingStats();
   const s = all[tab] ?? emptyMode();
   const cfg = MODES[tab];
   const peak = Math.max(1, ...s.dist, s.fails);
 
   return (
     <Modal title="Seu progresso" onClose={onClose}>
+      <p className="mdl-p"><b>Treino solo:</b> {training.sessions} sessões · {training.solved} resolvidas.</p>
+      <p className="mdl-p">Partidas com amigos neste dispositivo. Treinos solo não entram nestes números.</p>
       <div className="tabs">
         {MODE_IDS.map((m) => (
-          <button key={m} className="tab" data-on={tab === m} onClick={() => setTab(m)}>
+          <button key={m} className="tab" aria-pressed={tab === m} data-on={tab === m} onClick={() => setTab(m)}>
             {MODES[m].label}
           </button>
         ))}

@@ -88,7 +88,7 @@ export function Leaderboard({
     <aside className="rail rail-r">
       <div className="rail-hd">
         <span className="rail-t">Ranking</span>
-        {onOpenFull && total > top.length
+        {onOpenFull && total > 0
           ? <button className="rail-all" onClick={onOpenFull}>ver todos · {fmtInt(total)}</button>
           : <span className="rail-s">{total > 0 ? `${fmtInt(total)} na sala` : 'ao vivo'}</span>}
       </div>

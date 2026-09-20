@@ -6,6 +6,14 @@ export type ConnStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'taken';
 
 /** The room closed us because the same player opened it somewhere else. */
 export const TAKEOVER_CODE = 4001;
+const roomTokens = new Map<string,string>();
+export function saveRoomToken(code: string, token: string): void {
+  roomTokens.set(code,token);
+  try { sessionStorage.setItem(`arena.session.${code}`,token); } catch { /* in-memory fallback */ }
+}
+export function loadRoomToken(code:string): string | undefined {
+  try { return sessionStorage.getItem(`arena.session.${code}`) ?? roomTokens.get(code); } catch { return roomTokens.get(code); }
+}
 
 /**
  * Room socket.
@@ -39,6 +47,9 @@ export class RoomSocket {
    * Queueing removes the race instead of widening the timer.
    */
   private pending: ClientMessage[] = [];
+  private ready = false;
+  private generation = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** serverNow ≈ Date.now() + offset */
   offset = 0;
@@ -48,7 +59,7 @@ export class RoomSocket {
   constructor(
     private readonly code: string,
     private readonly name: string,
-    private readonly clientId: string,
+    _clientId: string,
     /**
      * True only for the socket that opens a freshly minted room.
      *
@@ -59,7 +70,7 @@ export class RoomSocket {
      * room as real only when this flag arrives, and the join path checks
      * /info before connecting.
      */
-    private readonly isNew = false,
+    _isNew = false,
   ) {}
 
   on(fn: Listener): () => void {
@@ -76,29 +87,51 @@ export class RoomSocket {
     for (const fn of this.statusListeners) fn(s);
   }
 
-  connect(): void {
+  async connect(): Promise<void> {
+    if(this.retryTimer) {clearTimeout(this.retryTimer);this.retryTimer=null;}
     this.closedByUs = false;
+    const generation=++this.generation;
     this.setStatus('connecting');
+    try {
+      const response=await fetch(`/api/rooms/${encodeURIComponent(this.code)}/info`,{signal:AbortSignal.timeout(8000),cache:'no-store'});
+      if(this.closedByUs || generation !== this.generation) return;
+      if(response.status>=500) {this.retry();return;}
+      if(!response.ok) {
+        const message=response.status===404?'Essa sala não existe ou expirou. Volte ao início para criar outra.':response.status===410?'Essa sala usa uma versão antiga. Crie uma nova sala.':response.status===429?'Muitas tentativas. Aguarde um minuto antes de tentar novamente.':response.status===503?'A sala está indisponível. Tente novamente em instantes.':'Não foi possível entrar. Volte ao início e tente novamente.';
+        this.fail(message);return;
+      }
+      const info=await response.json() as {full?:boolean};
+      if(this.closedByUs || generation !== this.generation) return;
+      if(info.full){this.fail('A sala está cheia. Tente novamente em instantes.');return;}
+    } catch {
+      if(this.closedByUs || generation !== this.generation) return;
+      this.retry();return;
+    }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const q = this.isNew ? '?new=1' : '';
+    this.ready = false;
+    const q = '';
     const ws = new WebSocket(`${proto}://${location.host}/api/rooms/${encodeURIComponent(this.code)}/ws${q}`);
     this.ws = ws;
 
     ws.onopen = () => {
-      this.attempt = 0;
+      if(this.closedByUs || this.ws !== ws) return;
       this.setStatus('open');
-      this.send({ t: 'join', name: this.name, clientId: this.clientId, v: PROTOCOL_VERSION });
-      // Drain after join, never before: the room has to know who we are first.
-      const queued = this.pending;
-      this.pending = [];
-      for (const m of queued) this.send(m);
+      this.send({ t: 'join', name: this.name, token:loadRoomToken(this.code), v: PROTOCOL_VERSION });
       this.send({ t: 'ping', ts: Date.now() });
       this.pingTimer = setInterval(() => this.send({ t: 'ping', ts: Date.now() }), 15_000);
     };
 
     ws.onmessage = (ev) => {
+      if(this.closedByUs || this.ws !== ws) return;
       let msg: ServerMessage;
       try { msg = JSON.parse(ev.data as string) as ServerMessage; } catch { return; }
+      if (msg.t === 'welcome') {
+        this.attempt=0;
+        if(msg.token) saveRoomToken(this.code,msg.token);
+        this.ready=true;
+        const queued=this.pending; this.pending=[];
+        for(const m of queued) this.send(m);
+      }
       if (msg.t === 'pong') {
         const now = Date.now();
         this.rttMs = now - msg.ts;
@@ -110,6 +143,7 @@ export class RoomSocket {
     };
 
     ws.onclose = (ev) => {
+      if(this.ws !== ws)return;
       if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
 
       // A takeover is not a failure to recover from — reconnecting is exactly
@@ -121,17 +155,34 @@ export class RoomSocket {
         return;
       }
 
+      this.ready=false;
       this.setStatus('closed');
+      if(ev.code===4003 && ev.reason==='expired') {this.fail('Esta sala expirou. Volte ao início para criar outra.');return;}
+      if (ev.code === 4002 || ev.code === 4003 || ev.code === 4008) this.closedByUs=true;
       if (this.closedByUs) return;
-      const wait = Math.min(8000, 400 * 2 ** this.attempt++) + Math.random() * 250;
-      setTimeout(() => this.connect(), wait);
+      this.retry();
     };
 
     ws.onerror = () => ws.close();
   }
 
+  private retry(): void {
+    if(this.closedByUs)return;
+    this.setStatus('closed');
+    if(this.attempt>=4){this.fail('Não foi possível reconectar. Confira sua rede e use Reconectar.');return;}
+    const wait=Math.min(8000,400*2**this.attempt++)+Math.random()*250;
+    if(this.retryTimer)clearTimeout(this.retryTimer);
+    this.retryTimer=setTimeout(()=>{if(!this.closedByUs)this.connect();},wait);
+  }
+
+  private fail(message:string): void {
+    this.closedByUs=true;this.ready=false;this.setStatus('closed');
+    for(const fn of this.listeners)fn({t:'error',code:'connection',message});
+  }
+
   /** Take the room back from whatever else claimed it. */
   reclaim(): void {
+    if(this.retryTimer) {clearTimeout(this.retryTimer);this.retryTimer=null;}
     this.closedByUs = false;
     this.attempt = 0;
     this.connect();
@@ -139,12 +190,15 @@ export class RoomSocket {
 
   close(): void {
     this.closedByUs = true;
+    this.generation++;
+    if(this.retryTimer) clearTimeout(this.retryTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.ws?.close();
+    this.listeners.clear(); this.statusListeners.clear();
   }
 
   send(msg: ClientMessage): void {
-    if (this.ws?.readyState === WebSocket.OPEN) { this.ws.send(JSON.stringify(msg)); return; }
+    if (this.ws?.readyState === WebSocket.OPEN && (this.ready || msg.t === 'join' || msg.t === 'ping')) { this.ws.send(JSON.stringify(msg)); return; }
     // Anything that matters before the socket settles has to wait, not vanish.
     // `guess` is deliberately excluded by the caller: a guess replayed after a
     // reconnect would land in a round that has moved on.

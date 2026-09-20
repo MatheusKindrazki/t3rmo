@@ -1,7 +1,8 @@
 import type { Mode } from './modes.ts';
+import type { RoundScore } from './scoring.ts';
 import type { Tile } from './evaluate.ts';
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** Base cadence for a small room. Large rooms slow down — see `tickMsFor`. */
 export const TICK_MS = 500;
@@ -109,10 +110,11 @@ export type Phase = 'lobby' | 'countdown' | 'playing' | 'intermission' | 'finish
 /* ------------------------------------------------------------------ client -> server */
 
 export type ClientMessage =
-  | { t: 'join'; name: string; clientId: string; v: number }
+  | { t: 'join'; name: string; clientId?: string; token?: string; v: number }
   | { t: 'guess'; word: string; seq: number }
   | { t: 'config'; mode?: Mode; rounds?: number; pace?: number }
   | { t: 'start' }
+  | { t: 'kick'; playerId: string; ban?: boolean }
   | { t: 'page'; from: number; to: number }
   | { t: 'ping'; ts: number };
 
@@ -153,6 +155,9 @@ export interface RoundCfgWire {
 }
 
 export interface RoomSnapshot {
+  matchId: number;
+  training?: boolean;
+  pace?: number;
   code: string;
   mode: Mode;
   phase: Phase;
@@ -189,7 +194,7 @@ export interface PlayerBoardState {
 }
 
 export type ServerMessage =
-  | { t: 'welcome'; you: { id: string; name: string; isHost: boolean }; room: RoomSnapshot; now: number }
+  | { t: 'welcome'; token?: string; you: { id: string; name: string; isHost: boolean }; room: RoomSnapshot; now: number }
   | { t: 'state'; room: RoomSnapshot; board: PlayerBoardState | null; now: number }
   | { t: 'roundStart'; room: RoomSnapshot; boards: number; maxGuesses: number; now: number }
   | {
@@ -235,7 +240,7 @@ export type ServerMessage =
       t: 'roundEnd';
       room: RoomSnapshot;
       answers: string[];
-      you: { score: number; rank: number; solvedWords: number; guesses: number; roundScore: number } | null;
+      you: { score: number; rank: number; solvedWords: number; guesses: number; roundScore: number; breakdown?: RoundScore } | null;
       podium: RowWire[];
     }
   | {
@@ -250,7 +255,7 @@ export type ServerMessage =
        * whole match ended on.
        */
       answers: string[];
-      you: { rank: number; score: number } | null;
+      you: { rank: number; score: number; breakdown?: RoundScore } | null;
     }
   | { t: 'page'; from: number; rows: RowWire[]; total: number }
   | { t: 'pong'; ts: number; now: number }

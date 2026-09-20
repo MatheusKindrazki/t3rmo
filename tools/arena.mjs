@@ -2,16 +2,9 @@
 /**
  * Spins up a test room with bots and waits for you.
  *
- * Doing this by hand takes several steps and two of them are easy to get
- * wrong, which is why this exists:
- *
- *  1. A room is only REAL once the socket that opened it says `?new=1`.
- *     Without that the server treats it as a ghost room and the join page
- *     refuses it — the defence against typo'd codes fires on your own test.
- *  2. The room auto-starts 30 s after the SECOND player joins. Ramp four
- *     hundred bots in and the match is already running before you have opened
- *     the link. So the fleet is held back: one socket opens the room, prints
- *     the link, and nothing else connects until a human actually shows up.
+ * Protocol v2: rooms are reserved server-side; host authority comes from the
+ * private creation capability. Friend rooms start only on a host command.
+ * The fleet waits for a human so the round is not missed during setup.
  *
  * Usage
  *   node tools/arena.mjs                          400 bots, MISTO, 4 rounds, production
@@ -20,6 +13,7 @@
  *   node tools/arena.mjs --no-wait                start immediately, do not wait for a human
  *   node tools/arena.mjs --start-in 20            seconds to give yourself after arriving
  */
+import WebSocket from 'ws';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -32,7 +26,8 @@ const arg = (k, d) => {
 const flag = (k) => process.argv.includes(`--${k}`);
 
 const HOST = arg('host', 't3rmo.com');
-const BOTS = Number(arg('bots', 400));
+const BOTS = Number(arg('bots', 20));
+if (!Number.isInteger(BOTS) || BOTS < 1 || BOTS > 48) throw new Error('Use 1–48 bots; larger load needs an explicitly configured staging policy.');
 const MODE = arg('mode', 'misto');
 const ROUNDS = Number(arg('rounds', 4));
 const RAMP = Number(arg('ramp', Math.max(8000, BOTS * 60)));
@@ -60,13 +55,12 @@ async function info(code) {
 
 const main = async () => {
   say(`${C.dim}abrindo sala em ${HOST}…${C.r}`);
-  const res = await fetch(`${HTTP}://${HOST}/api/rooms`, { method: 'POST' });
+  const res = await fetch(`${HTTP}://${HOST}/api/rooms`, { method: 'POST', headers:{Origin:`${HTTP}://${HOST}`,'Content-Type':'application/json'}, body:JSON.stringify({mode:MODE,rounds:ROUNDS,pace:TEMPO}) });
   if (!res.ok) { say(`não consegui criar a sala: HTTP ${res.status}`); process.exit(1); }
-  const { code } = await res.json();
+  const { code, hostToken } = await res.json();
 
-  // The host socket. `?new=1` is what makes the room real; holding the socket
-  // open is what makes this process the host, so it can start the match.
-  const host = new WebSocket(`${WS}://${HOST}/api/rooms/${code}/ws?new=1`);
+  // Only the creation token grants host authority; it is never printed.
+  const host = new WebSocket(`${WS}://${HOST}/api/rooms/${code}/ws`, {origin:`${HTTP}://${HOST}`});
   const send = (m) => host.readyState === 1 && host.send(JSON.stringify(m));
   let started = false;
 
@@ -75,8 +69,8 @@ const main = async () => {
     host.onerror = () => fail(new Error('não consegui abrir o socket do anfitrião'));
     setTimeout(() => fail(new Error('tempo esgotado abrindo o socket')), 15000);
   });
-  send({ t: 'join', name: 'anfitriao', clientId: `arena-host-${Date.now()}`, v: 1 });
-  send({ t: 'config', mode: MODE, rounds: ROUNDS, pace: TEMPO });
+  send({ t: 'join', name: 'anfitriao', token:hostToken, v: 2 });
+
   await sleep(1200);
 
   const conf = await info(code);

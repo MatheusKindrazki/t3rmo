@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 #!/usr/bin/env node
 /**
  * One slice of the bot fleet, in its own process.
@@ -130,7 +131,7 @@ class Bot {
     const t0 = nowMs();
     let ws;
     try {
-      ws = new WebSocket(`${cfg.wsScheme}://${cfg.host}/api/rooms/${cfg.code}/ws`);
+      ws = new WebSocket(`${cfg.wsScheme}://${cfg.host}/api/rooms/${cfg.code}/ws`, {origin:`${cfg.wsScheme === 'wss' ? 'https' : 'http'}://${cfg.host}`});
     } catch (e) {
       stats.failed++;
       bump(stats.errors, `construct:${e?.code || e?.message || 'erro'}`);
@@ -141,7 +142,7 @@ class Bot {
       this.alive = true;
       stats.connected++;
       stats.hand.record(nowMs() - t0);
-      this.send({ t: 'join', name: `bot${String(this.i).padStart(5, '0')}`, clientId: `load-${this.i}-${cfg.runId}`, v: 1 });
+      this.send({ t: 'join', name: `bot${String(this.i).padStart(5, '0')}`, token:this.i === 0 ? cfg.hostToken : undefined, v: 2 });
       if (this.prober) this.schedulePing();
     };
     ws.onerror = (e) => {

@@ -74,7 +74,7 @@ export function Rules({ onClose }: { onClose: () => void }) {
       </label>
 
       <p className="mdl-p">
-        Os acentos são preenchidos automaticamente: digite <b>acucar</b> e o jogo revela <b>AÇÚCAR</b>.
+        Os acentos são preenchidos automaticamente: digite <b>aviao</b> e o jogo revela <b>AVIÃO</b>.
         Palavras podem ter letras repetidas.
       </p>
 
@@ -132,10 +132,9 @@ export function Rules({ onClose }: { onClose: () => void }) {
       <div className="mdl-sep">como se ganha</div>
 
       <p className="mdl-p">
-        <b style={{ color: 'var(--right)' }}>Menos tentativas sempre fica na frente.</b> Quem
-        fecha em 3 não pode ser ultrapassado, naquela rodada, por quem precisou de 4 — por mais
-        rápido que o outro tenha sido. O relógio só desempata <i>dentro</i> do mesmo número de
-        tentativas.
+        <b>Acertos, tentativas e velocidade somam pontos.</b> Menos tentativas rende mais,
+        mas a velocidade pode compensar uma tentativa extra. Velocidade e sequência juntas
+        não compensam duas tentativas extras na mesma rodada. Vence quem soma mais pontos na partida.
       </p>
       <p className="mdl-p">
         Resolver parte das palavras já pontua. Fechar sem desperdiçar nenhuma tentativa dá bônus,

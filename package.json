@@ -11,9 +11,13 @@
     "dev:server": "pnpm --filter @arena/server dev",
     "loadtest": "node tools/loadtest.mjs",
     "arena": "node tools/arena.mjs",
-    "arena:local": "node tools/arena.mjs --host 127.0.0.1:8791"
+    "arena:local": "node tools/arena.mjs --host 127.0.0.1:8791",
+    "test": "node --test packages/core/test/core.test.ts apps/server/test/*.test.ts apps/web/test/*.test.ts",
+    "test:runtime": "node tools/security-smoke.mjs",
+    "test:modes": "node tools/modes-smoke.mjs"
   },
   "devDependencies": {
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "ws": "8.21.0"
   }
 }
