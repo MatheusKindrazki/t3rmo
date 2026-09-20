@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react';
 import { MODES, MODE_IDS, roundConfig, PACE_MIN, PACE_MAX, type Mode } from '@arena/core';
 import { fmtClock } from '../lib/game.ts';
 
+function Glyph({ n }: { n: number }) {
+  if (n === 0) return <span className="glyph glyph-ladder" aria-hidden="true">{[1, 2, 3, 4].map(h => <span key={h} style={{ height: `${h * 3 + 2}px` }} />)}</span>;
+  return <span className="glyph" data-n={n} aria-hidden="true">{Array.from({ length: n }, (_, i) => <span key={i} />)}</span>;
+}
+
 type Preview = { created?: boolean; phase?: string; mode?: Mode; rounds?: number; online?: number; training?: boolean; full?: boolean };
 export function Landing({ name, setName, onCreate, onJoin, busy, error, onRules, onProgress }: {
   name: string; setName: (n: string) => void;
@@ -52,7 +57,7 @@ export function Landing({ name, setName, onCreate, onJoin, busy, error, onRules,
         <h1>{step === 'setup' ? 'Sua sala, suas regras.' : `Convite para a sala ${code}`}</h1>
         {step === 'setup' ? <form onSubmit={(e) => { e.preventDefault(); onCreate(mode, rounds, pace); }}>
           {nick}<p className="entry-summary">{MODES[mode].label} · {rounds} rodadas · {pace === 1 ? 'tempo normal' : `${pace}× tempo`}<small>Até {fmtClock(duration)} de relógio, mais as pausas entre rodadas.</small></p>
-          <details className="entry-custom"><summary>Personalizar partida</summary><fieldset><legend>Formato</legend><div className="entry-modes">{MODE_IDS.map((m) => <label key={m}><input type="radio" name="mode" checked={mode === m} onChange={() => { setMode(m); if (m === 'misto') setRounds(4); }} />{MODES[m].label}</label>)}</div></fieldset>{mode === 'misto' && <p className="entry-note">Uma rodada de cada formato. Depois do quarteto, a sequência recomeça.{rounds < 4 ? ' Com menos de 4 rodadas, você não passa por todos os formatos.' : ''}</p>}<label className="label" htmlFor="rounds">Rodadas: {rounds}</label><input id="rounds" className="slider" type="range" min={1} max={12} value={rounds} onChange={(e) => setRounds(+e.target.value)} /><label className="label" htmlFor="pace">Tempo: {pace}×</label><input id="pace" className="slider" type="range" min={PACE_MIN} max={PACE_MAX} step="0.1" value={pace} onChange={(e) => setPace(+e.target.value)} /></details>
+          <details className="entry-custom"><summary>Personalizar partida</summary><fieldset><legend>Formato</legend><div className="seg">{MODE_IDS.filter(m => m !== 'misto').map(m => <button type="button" key={m} className="seg-b" data-on={mode === m} aria-pressed={mode === m} onClick={() => setMode(m)}><Glyph n={MODES[m].boards} /><span className="seg-name">{MODES[m].label}</span><span className="seg-meta">{MODES[m].boards} palavra{MODES[m].boards > 1 ? 's' : ''}</span></button>)}</div><button type="button" className="seg-misto" data-on={mode === 'misto'} aria-pressed={mode === 'misto'} onClick={() => { setMode('misto'); setRounds(4); }}><Glyph n={0} /><span className="seg-misto-text"><b>MISTO</b><i>Uma rodada de cada: TERMO, DUETO, TRIETO e QUARTETO</i></span></button></fieldset>{mode === 'misto' && <p className="entry-note">Uma rodada de cada formato. Depois do quarteto, a sequência recomeça.{rounds < 4 ? ' Com menos de 4 rodadas, você não passa por todos os formatos.' : ''}</p>}<label className="label" htmlFor="rounds">Rodadas: {rounds}</label><input id="rounds" className="slider" type="range" min={1} max={12} value={rounds} onChange={(e) => setRounds(+e.target.value)} /><label className="label" htmlFor="pace">Tempo: {pace}×</label><input id="pace" className="slider" type="range" min={PACE_MIN} max={PACE_MAX} step="0.1" value={pace} onChange={(e) => setPace(+e.target.value)} /></details>
           <button className="btn" disabled={busy}>{busy ? 'Criando sala…' : 'Criar sala'}</button>
         </form> : <>
           {!preview && !previewError && <p role="status">Consultando sala…</p>}
